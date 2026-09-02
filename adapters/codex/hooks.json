@@ -1,0 +1,19 @@
+{
+  "//": "Copy to ~/.codex/hooks.json (or merge into an existing one). Replace <donechan-entry> with the absolute path to dist/cli.js. Codex will ask you to trust this hook on first load.",
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "donechan hook",
+            "commandWindows": "node <donechan-entry> hook",
+            "timeout": 15,
+            "async": true,
+            "statusMessage": "DoneChan: pushing done notification"
+          }
+        ]
+      }
+    ]
+  }
+}

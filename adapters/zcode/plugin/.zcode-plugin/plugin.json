@@ -1,0 +1,10 @@
+{
+  "name": "donechan",
+  "version": "0.1.0",
+  "description": "Push a ServerChan³ notification whenever ZCode finishes a task; the AI defines the notification content via the donechan marker protocol.",
+  "author": {
+    "name": "DoneChan contributors"
+  },
+  "license": "MIT",
+  "hooks": "hooks"
+}

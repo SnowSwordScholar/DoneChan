@@ -1,0 +1,17 @@
+{
+  "//": "Merge this object into ~/.claude/settings.json.",
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "donechan hook",
+            "async": true,
+            "timeout": 15
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -1,0 +1,5 @@
+# Codex legacy notify fallback (for Codex versions without hooks.json).
+# Add this to ~/.codex/config.toml. The JSON payload arrives as the final
+# argv argument — `donechan hook` detects that automatically.
+# Replace <donechan-entry> with the absolute path to dist/cli.js.
+notify = ["node", "<donechan-entry>", "hook"]

@@ -1,0 +1,21 @@
+{
+  "//": "Merge this object into <repo>/.zcode/config.json to enable DoneChan for one repository only. Team-shared configs must not contain SendKeys — use DONECHAN_SENDKEY or ~/.donechan/config.json.",
+  "hooks": {
+    "enabled": true,
+    "events": {
+      "Stop": [
+        {
+          "hooks": [
+            {
+              "type": "process",
+              "command": "node",
+              "args": ["<donechan-entry>", "hook"],
+              "timeoutMs": 8000,
+              "statusMessage": "DoneChan：推送完成通知"
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

@@ -1,0 +1,38 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        node: [18, 20, 22]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      - run: npm ci
+      - run: npm run build
+      - run: npm test
+
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci && npm run build
+      # The hook entry must always exit 0, even on garbage input.
+      - run: |
+          echo '{"hook_event_name":"Stop","cwd":".","last_assistant_message":"hi"}' | node dist/cli.js hook
+          node dist/cli.js hook '{"type":"agent-turn-complete","cwd":"."}'
+          echo 'not json' | node dist/cli.js hook
+      - run: node dist/cli.js check || true

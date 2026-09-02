@@ -1,0 +1,17 @@
+{
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "process",
+            "command": "node",
+            "args": ["<donechan-entry>", "hook"],
+            "timeoutMs": 8000,
+            "statusMessage": "DoneChan：推送完成通知"
+          }
+        ]
+      }
+    ]
+  }
+}
