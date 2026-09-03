@@ -5,18 +5,20 @@
  * Commands:
  *   donechan hook              Consume a hook payload (stdin JSON or argv JSON)
  *                              and fire a push. Always exits 0, never blocks.
- *   donechan send [title]      Send a test notification (body from stdin or -b).
- *   donechan install <agent>   Print/apply hook wiring for zcode|codex|claude.
+ *   donechan send [title]      Send a test notification (body from -b).
+ *   donechan login <sendkey>   Write the sendkey to ~/.donechan/config.json (0600).
+ *   donechan install <agent>   Print hook wiring for zcode|codex|claude.
  *   donechan check             Validate config without sending.
  */
 
 import { spawn } from "node:child_process";
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
-import { dirname } from "node:path";
+import { readFileSync, writeFileSync, existsSync, mkdirSync, openSync, writeSync, closeSync, fchmodSync, renameSync, unlinkSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { normalize } from "./agent/normalize.js";
 import { compose } from "./notification/compose.js";
 import { isValidSendKey, push } from "./channel/serverchan.js";
 import { loadConfig, userConfigPath } from "./config/load.js";
+import { stageHandoff, spawnDetached, readHandoff, sweepStaleStaging, shellQuoteWin, shellQuotePosix } from "./handoff.js";
 
 const VERSION = "0.1.0";
 
@@ -29,20 +31,14 @@ function err(msg: string): void {
 }
 
 /**
- * Fire-and-forget push: spawn a detached copy of this CLI so the hook returns
- * immediately even on agents that run hooks synchronously (ZCode).
+ * Shell-quote a value for the target platform. Used only when generating
+ * config snippets for agents whose command hooks run through a shell.
  */
-function fireAndForget(argv: string[], cwd: string): void {
-  const child = spawn(process.execPath, [__filenameSafe(), ...argv], {
-    detached: true,
-    stdio: "ignore",
-    cwd,
-    windowsHide: true,
-  });
-  child.unref();
+function shellQuote(value: string, platform: "win" | "posix"): string {
+  return platform === "win" ? shellQuoteWin(value) : shellQuotePosix(value);
 }
 
-function __filenameSafe(): string {
+function entryPath(): string {
   return process.argv[1]!;
 }
 
@@ -105,17 +101,40 @@ async function cmdHook(argvJson?: string): Promise<number> {
     ...(config.tags || notification.tags ? { tags: config.tags ?? notification.tags } : {}),
   };
 
-  fireAndForget(["__send", JSON.stringify(payload)], event.cwd);
+  // Hand the payload to the detached worker via a temp file: Windows argv has
+  // a hard length limit and marker bodies are unbounded, so argv could drop
+  // notifications silently.
+  let handoff: Awaited<ReturnType<typeof stageHandoff>> | null = null;
+  try {
+    handoff = await stageHandoff(JSON.stringify(payload));
+    spawnDetached(entryPath(), handoff.file, event.cwd);
+  } catch (e) {
+    err(`donechan: failed to stage payload: ${e instanceof Error ? e.message : e}`);
+    // If the worker never got a chance to run, clean the staging dir here so
+    // notification content does not linger in the temp filesystem.
+    if (handoff) await handoff.cleanup();
+  }
+  // Sweep staging dirs orphaned by crashed/killed runs (24h age guard); do it
+  // here, not in the worker, so cleanup does not depend on a notification.
+  void sweepStaleStaging();
   return 0;
 }
 
-/** `donechan __send <json>` — internal detached worker. Do not call by hand. */
-async function cmdSendInternal(json: string): Promise<number> {
+/** `donechan __send --payload-file <file>` — internal detached worker. Do not call by hand. */
+async function cmdSendInternal(args: string[]): Promise<number> {
+  const fileIndex = args.indexOf("--payload-file");
+  if (fileIndex < 0 || !args[fileIndex + 1]) return 0;
+  const staged = args[fileIndex + 1]!;
   const config = loadConfig(process.cwd());
-  if (!config) return 0;
+  if (!config) {
+    // No key configured: consume the staging file anyway so notification
+    // content never lingers in the temp filesystem.
+    await readHandoff(staged).catch(() => {});
+    return 0;
+  }
   let payload: unknown;
   try {
-    payload = JSON.parse(json);
+    payload = JSON.parse(await readHandoff(staged));
   } catch {
     return 0;
   }
@@ -164,7 +183,7 @@ function cmdCheck(): number {
 const ZCODE_HOOK = {
   type: "process",
   command: "node",
-  args: ["<absolute-path-to-donechan-entry>", "hook"],
+  args: ["<donechan-entry>", "hook"],
   timeoutMs: 8000,
   statusMessage: "DoneChan：推送完成通知",
 };
@@ -172,14 +191,14 @@ const ZCODE_HOOK = {
 const CODEX_HOOK = {
   type: "command",
   command: "donechan hook",
-  commandWindows: "node <absolute-path-to-donechan-entry> hook",
+  commandWindows: "node <donechan-entry-quoted> hook",
   timeout: 15,
   async: true,
   statusMessage: "DoneChan: pushing done notification",
 };
 
 function cmdInstall(agent: string): number {
-  const entry = __filenameSafe();
+  const entry = entryPath();
   switch (agent) {
     case "zcode": {
       const hook = JSON.parse(JSON.stringify(ZCODE_HOOK));
@@ -190,7 +209,10 @@ function cmdInstall(agent: string): number {
     }
     case "codex": {
       const hook = JSON.parse(JSON.stringify(CODEX_HOOK));
-      hook.commandWindows = `node ${entry} hook`;
+      // Codex command hooks run through a shell; quote the entry path so
+      // spaces and shell metacharacters cannot break or inject the command.
+      hook.command = `node ${shellQuote(entry, "posix")} hook`;
+      hook.commandWindows = `node ${shellQuote(entry, "win")} hook`;
       out("// 写入 ~/.codex/hooks.json：");
       out(JSON.stringify({ hooks: { Stop: [{ hooks: [hook] }] } }, null, 2));
       out("// 注意：Codex 首次加载该 hook 会提示信任确认。");
@@ -207,7 +229,11 @@ function cmdInstall(agent: string): number {
                   hooks: [
                     {
                       type: "command",
-                      command: `node ${entry} hook`,
+                      // Claude command hooks run through the OS shell; pick
+                      // quoting per platform so Windows cmd.exe gets double
+                      // quotes instead of POSIX single quotes it ignores.
+                      command: `node ${shellQuote(entry, "posix")} hook`,
+                      commandWindows: `node ${shellQuote(entry, "win")} hook`,
                       async: true,
                       timeout: 15,
                     },
@@ -231,17 +257,66 @@ function cmdInstall(agent: string): number {
   return 0;
 }
 
-function writeUserConfig(sendKey: string): number {
+/**
+ * Atomically replace a file: write to a temp sibling, fsync + chmod, rename
+ * over the target. Keeps permissions tight (0600) since the file holds the
+ * SendKey, and never leaves a truncated config on crash.
+ */
+function atomicWritePrivate(path: string, content: string): void {
+  const tmp = `${path}.tmp-${process.pid}`;
+  try {
+    const fd = openSync(tmp, "w", 0o600);
+    try {
+      writeSync(fd, content);
+      if (process.platform !== "win32") fchmodSync(fd, 0o600);
+    } finally {
+      closeSync(fd);
+    }
+    renameSync(tmp, path);
+  } catch (e) {
+    try {
+      unlinkSync(tmp);
+    } catch {
+      /* best effort */
+    }
+    throw e;
+  }
+}
+
+/** `donechan login <sendkey>` — persist the sendkey safely. */
+function cmdLogin(sendKey: string): number {
   if (!isValidSendKey(sendKey)) {
-    err('invalid sendkey format (expected sctp<uid>t<secret> or SCT...)');
+    err("invalid sendkey format (expected sctp<uid>t<secret> or SCT...)");
     return 1;
   }
   const path = userConfigPath();
+  let existing: Record<string, unknown> = {};
+  if (existsSync(path)) {
+    try {
+      const parsed: unknown = JSON.parse(readFileSync(path, "utf8"));
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        existing = parsed as Record<string, unknown>;
+      } else {
+        throw new Error("config root is not an object");
+      }
+    } catch {
+      // Preserve the unreadable file and fail loudly rather than silently
+      // reporting success after discarding user config.
+      const backup = `${path}.corrupt-${Date.now()}`;
+      try {
+        renameSync(path, backup);
+        err(`existing config is not valid JSON; moved to ${backup}`);
+      } catch {
+        err(`existing config at ${path} is not valid JSON and could not be backed up`);
+      }
+      err("fix or delete that file, then run donechan login again");
+      return 1;
+    }
+  }
   mkdirSync(dirname(path), { recursive: true });
-  const existing = existsSync(path) ? JSON.parse(readFileSync(path, "utf8")) : {};
   existing.sendkey = sendKey;
-  writeFileSync(path, JSON.stringify(existing, null, 2));
-  out(`✅ sendkey written to ${path}`);
+  atomicWritePrivate(path, JSON.stringify(existing, null, 2));
+  out(`✅ sendkey written to ${path} (permissions 0600 on unix)`);
   return 0;
 }
 
@@ -275,7 +350,7 @@ async function main(): Promise<number> {
     case "hook":
       return cmdHook(rest[0]);
     case "__send":
-      return cmdSendInternal(rest[0] ?? "");
+      return cmdSendInternal(rest);
     case "send":
       return cmdSend(rest);
     case "check":
@@ -283,7 +358,7 @@ async function main(): Promise<number> {
     case "install":
       return rest[0] ? cmdInstall(rest[0]) : (err("usage: donechan install <zcode|codex|claude>"), 1);
     case "login":
-      return rest[0] ? writeUserConfig(rest[0]) : (err("usage: donechan login <sendkey>"), 1);
+      return rest[0] ? cmdLogin(rest[0]) : (err("usage: donechan login <sendkey>"), 1);
     default:
       err(`unknown command: ${cmd}`);
       return usage();

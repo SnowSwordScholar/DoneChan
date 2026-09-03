@@ -1,9 +1,10 @@
 # Dependencies
 node_modules/
 
-# Build output
+# Build output (built fresh by `prepare`/`prepack` on install & publish)
 dist/
 *.tsbuildinfo
+dist/.gitignore
 
 # Local secrets & config — never commit SendKeys
 .env

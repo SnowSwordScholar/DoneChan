@@ -17,6 +17,7 @@ describe("sendkey handling", () => {
     expect(isValidSendKey("SCTxxx")).toBe(true);
     expect(isValidSendKey("hello")).toBe(false);
     expect(isValidSendKey("")).toBe(false);
+    expect(isValidSendKey("SCT/foo?x=1")).toBe(false);
   });
 });
 
@@ -76,12 +77,37 @@ describe("push", () => {
     expect(JSON.parse(String(init.body))).toEqual({ title: "T", desp: "D", short: "S", tags: "a|b" });
   });
 
-  it("never includes the sendkey in error messages", async () => {
-    vi.stubGlobal("fetch", vi.fn(async () => {
-      throw new Error("sctp12345tSECRET leaked");
-    }));
-    const r = await push("sctp12345tAbCdEf", { title: "t" });
-    expect(r.message).not.toContain("AbCdEf");
-    expect(r.message).toBe("sctp12345tSECRET leaked");
+  it("never leaks the sendkey even when the error embeds the full request URL", async () => {
+    const key = "sctp12345tSuperSecretValue99";
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        throw new Error(
+          `request to https://12345.push.ft07.com/send/${key}.send failed: ECONNRESET`,
+        );
+      }),
+    );
+    const r = await push(key, { title: "t" });
+    expect(r.ok).toBe(false);
+    expect(r.message).not.toContain("SuperSecretValue99");
+    expect(r.message).not.toContain("push.ft07.com/send");
+    expect(r.message).toContain("<url>");
+    expect(r.message).toContain("<sendkey>");
+  });
+
+  it("rejects sendkeys that do not match the official format", async () => {
+    // No fetch stub: push must bail out before any network call.
+    for (const bad of ["SCT/foo?x=1", "sctpabcTx", "sctp12345t", "hello", "SCT with space", "sctp12345tбуc"]) {
+      const r = await push(bad, { title: "t" });
+      expect(r.ok, bad).toBe(false);
+      expect(r.message).toContain("invalid sendkey format");
+    }
+  });
+
+  it("accepts the documented official key shapes", async () => {
+    expect(isValidSendKey("sctp12345tAbCdEfGhIjKlMnOpQrStUv")).toBe(true);
+    expect(isValidSendKey("SCT12345ABCDE")).toBe(true);
+    expect(isValidSendKey("sctp12345tбуc")).toBe(false);
+    expect(isValidSendKey("SCT/foo?x=1")).toBe(false);
   });
 });

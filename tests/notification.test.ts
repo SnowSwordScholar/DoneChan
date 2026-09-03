@@ -14,7 +14,7 @@ function event(overrides: Partial<DoneEvent> = {}): DoneEvent {
 }
 
 describe("extractMarker", () => {
-  it("parses a well-formed marker", () => {
+  it("parses a well-formed marker on the last line", () => {
     const text = '正文内容\n<!--donechan: {"title": "✅ 登录完成", "desp": "测试全绿", "short": "登录", "tags": "dev"}-->';
     const m = extractMarker(text)!;
     expect(m.title).toBe("✅ 登录完成");
@@ -22,18 +22,52 @@ describe("extractMarker", () => {
     expect(m.short).toBe("登录");
     expect(m.tags).toBe("dev");
   });
-  it("tolerates whitespace", () => {
-    const m = extractMarker('hi <!--  donechan:  {"title":"T"}  -->')!;
+
+  it("tolerates CRLF line endings", () => {
+    const m = extractMarker('正文\r\n<!--donechan: {"title":"T"}-->')!;
     expect(m.title).toBe("T");
   });
+
+  it("tolerates whitespace around the JSON", () => {
+    const m = extractMarker('hi\n  <!--  donechan:  {"title":"T"}  -->  ')!;
+    expect(m.title).toBe("T");
+  });
+
+  it("ignores a marker quoted in the middle of the body", () => {
+    const text = '示例如下 <!--donechan: {"title":"误报"}--> 正文继续\n这就是个例子';
+    expect(extractMarker(text)).toBeNull();
+  });
+
+  it("ignores a marker followed by trailing prose on the same line", () => {
+    expect(extractMarker('<!--donechan: {"title":"T"}--> 以上是格式说明')).toBeNull();
+  });
+
+  it("uses the last-line marker even when earlier lines quote examples", () => {
+    const text = '以前见过 <!--donechan: {"title":"例子"}-->\n真结尾\n<!--donechan: {"title":"真通知"}-->';
+    const m = extractMarker(text)!;
+    expect(m.title).toBe("真通知");
+  });
+
   it("rejects missing title", () => {
-    expect(extractMarker('<!--donechan: {"desp":"x"}-->')).toBeNull();
+    expect(extractMarker('\n<!--donechan: {"desp":"x"}-->')).toBeNull();
   });
+
   it("rejects broken JSON", () => {
-    expect(extractMarker("<!--donechan: {title}-->")).toBeNull();
+    expect(extractMarker('\n<!--donechan: {title}-->')).toBeNull();
   });
+
+  it("rejects non-object JSON", () => {
+    expect(extractMarker('\n<!--donechan: [1,2]-->')).toBeNull();
+  });
+
   it("returns null when no marker", () => {
     expect(extractMarker("普通回复")).toBeNull();
+  });
+
+  it("caps oversized fields", () => {
+    const m = extractMarker(`\n<!--donechan: {"title":"${"t".repeat(500)}","desp":"${"d".repeat(99999)}"}-->`)!;
+    expect(m.title.length).toBeLessThanOrEqual(100);
+    expect(m.desp!.length).toBeLessThanOrEqual(4000);
   });
 });
 
@@ -41,7 +75,7 @@ describe("compose", () => {
   it("prefers marker content", () => {
     const n = compose(
       event({
-        lastAssistantMessage: '回复<!--donechan: {"title":"AI 定义的标题","desp":"AI 定义的内容"}-->',
+        lastAssistantMessage: '回复\n<!--donechan: {"title":"AI 定义的标题","desp":"AI 定义的内容"}-->',
       }),
     );
     expect(n.source).toBe("marker");

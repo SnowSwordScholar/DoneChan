@@ -34,7 +34,16 @@ export function setMinIntervalMs(ms: number): void {
 
 let lastSendAt = 0;
 
-/** Extract the numeric uid from an `sctp{uid}t...` SendKey. */
+/** Official SendKey shapes: SC3 `sctp<digits>t<random>`, Turbo `SCT<random>`. */
+const SC3_KEY_RE = /^sctp\d+t[A-Za-z0-9]+$/u;
+const TURBO_KEY_RE = /^SCT[A-Za-z0-9]+$/u;
+
+/** True when the key matches the official SendKey format (either generation). */
+export function isValidSendKey(sendKey: string): boolean {
+  return SC3_KEY_RE.test(sendKey) || TURBO_KEY_RE.test(sendKey);
+}
+
+/** Extract the numeric uid from an `sctp{uid}t{rand}` SendKey. */
 export function uidFromSendKey(sendKey: string): string | null {
   const match = /^sctp(\d+)t/.exec(sendKey);
   return match ? match[1]! : null;
@@ -42,19 +51,14 @@ export function uidFromSendKey(sendKey: string): string | null {
 
 /** Build the push endpoint for a SendKey, routing SC3 vs Turbo by prefix. */
 export function endpointFor(sendKey: string): string | null {
-  if (sendKey.startsWith("sctp")) {
+  if (SC3_KEY_RE.test(sendKey)) {
     const uid = uidFromSendKey(sendKey);
-    return uid ? `https://${uid}.push.ft07.com/send/${sendKey}.send` : null;
+    return uid ? `https://${uid}.push.ft07.com/send/${encodeURIComponent(sendKey)}.send` : null;
   }
-  if (sendKey.startsWith("SCT")) {
-    return `https://sctapi.ftqq.com/${sendKey}.send`;
+  if (TURBO_KEY_RE.test(sendKey)) {
+    return `https://sctapi.ftqq.com/${encodeURIComponent(sendKey)}.send`;
   }
   return null;
-}
-
-/** True when the key looks like a ServerChan SendKey (either generation). */
-export function isValidSendKey(sendKey: string): boolean {
-  return /^(sctp\d+t|SCT)/.test(sendKey);
 }
 
 /** Minimal client-side pacing; ServerChan rejects rapid identical content. */
@@ -103,7 +107,9 @@ export async function push(
     return { ok: false, message: `server rejected: ${String(json.message ?? raw.slice(0, 200))}` };
   } catch (err) {
     const reason = err instanceof Error && err.name === "AbortError" ? "timeout" : describeError(err);
-    return { ok: false, message: reason };
+    // Network errors can embed the full request URL — and the URL carries the
+    // SendKey. Strip it before surfacing anything.
+    return { ok: false, message: redactSendKey(reason) };
   } finally {
     clearTimeout(timer);
   }
@@ -111,4 +117,15 @@ export async function push(
 
 function describeError(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
+}
+
+/**
+ * Remove SendKey material from an error message: the key itself, and any
+ * URL that might carry it (fetch errors quote the full URL).
+ */
+function redactSendKey(message: string): string {
+  return message
+    .replace(/sctp\d+t[A-Za-z0-9]+/gu, "<sendkey>")
+    .replace(/SCT[A-Za-z0-9]+/gu, "<sendkey>")
+    .replace(/(https?:\/\/)[^\s"'`<>]+/giu, "$1<url>");
 }
