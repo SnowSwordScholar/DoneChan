@@ -1,4 +1,7 @@
 import { describe, expect, it } from "vitest";
+import { writeFileSync, mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { detectAgent, normalize } from "../src/agent/normalize.js";
 
 const ZCODE_STOP = {
@@ -96,5 +99,21 @@ describe("normalize", () => {
   });
   it("returns null for unrecognized input", () => {
     expect(normalize("nope")).toBeNull();
+  });
+  it("recovers the reply from transcript_path when last_assistant_message is absent", () => {
+    const transcript = [
+      JSON.stringify({ type: "assistant", isSidechain: true, message: { role: "assistant", content: [{ type: "text", text: "子代理回复" }] } }),
+      JSON.stringify({ type: "assistant", message: { role: "assistant", content: [{ type: "text", text: "正文回复" }] } }),
+      JSON.stringify({ type: "assistant", message: { role: "assistant", content: [{ type: "tool_use", id: "t1" }] } }),
+    ].join("\n");
+    const file = join(mkdtempSync(join(tmpdir(), "donechan-test-")), "t.jsonl");
+    writeFileSync(file, transcript, "utf8");
+    const e = normalize({ ...CLAUDE_STOP, transcript_path: file, last_assistant_message: undefined })!;
+    expect(e.agent).toBe("claude");
+    expect(e.lastAssistantMessage).toBe("正文回复");
+  });
+  it("falls back to null reply when the transcript is missing", () => {
+    const e = normalize({ ...CLAUDE_STOP, transcript_path: "Z:/no/such/file.jsonl", last_assistant_message: undefined })!;
+    expect(e.lastAssistantMessage).toBeNull();
   });
 });

@@ -16,9 +16,13 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync, openSync, writeSync
 import { dirname, join } from "node:path";
 import { normalize } from "./agent/normalize.js";
 import { compose } from "./notification/compose.js";
+import { testNotification, resolveTags } from "./notification/presets.js";
 import { isValidSendKey, push } from "./channel/serverchan.js";
 import { loadConfig, userConfigPath } from "./config/load.js";
 import { stageHandoff, spawnDetached, readHandoff, sweepStaleStaging, shellQuoteWin, shellQuotePosix } from "./handoff.js";
+import { checkSendKey, planZcodeInstall, planCodexInstall, planClaudeInstall, planOpencodeInstall, buildZcodeHooks, buildCodexHooks, buildClaudeHooks, mergeHooks, mergeClaudeHooks, confirmPlan, skillTargetDir, skillSourceFile, codexSkillSourceFile, installSkill, AGENTS, type AgentName } from "./install.js";
+import { opencodePluginSource } from "./agent/opencode.js";
+import { codexConfigPath, claudeConfigPath, opencodePluginPath, zcodeConfigPath } from "./install.js";
 
 const VERSION = "0.1.0";
 
@@ -94,11 +98,12 @@ async function cmdHook(argvJson?: string): Promise<number> {
 
   const notification = compose(event);
   const title = config.titlePrefix ? `${config.titlePrefix} ${notification.title}` : notification.title;
+  const tags = resolveTags(event.agent, config.tags, notification.tags, config.markerTagsEnabled);
   const payload = {
     title,
     desp: notification.body,
     ...(notification.short ? { short: notification.short } : {}),
-    ...(config.tags || notification.tags ? { tags: config.tags ?? notification.tags } : {}),
+    ...(tags ? { tags } : {}),
   };
 
   // Hand the payload to the detached worker via a temp file: Windows argv has
@@ -153,10 +158,13 @@ async function cmdSend(args: string[]): Promise<number> {
   const bodyIndex = args.indexOf("-b");
   const body = bodyIndex >= 0 ? (args[bodyIndex + 1] ?? "") : "";
   const rest = args.filter((a, i) => a !== "-b" && i !== bodyIndex + 1);
-  const title = rest.join(" ") || "DoneChan 测试通知";
+  const preset = testNotification();
+  const title = rest.join(" ") || preset.title;
   const result = await push(config.sendKey, {
     title,
-    desp: body || "如果你收到这条消息，说明 DoneChan 工作正常 🎉",
+    desp: body || preset.body,
+    short: preset.short,
+    tags: preset.tags,
   });
   if (result.ok) {
     out(`✅ ${result.message}${result.pushId ? ` (pushid ${result.pushId})` : ""}`);
@@ -180,14 +188,6 @@ function cmdCheck(): number {
   return 0;
 }
 
-const ZCODE_HOOK = {
-  type: "process",
-  command: "node",
-  args: ["<donechan-entry>", "hook"],
-  timeoutMs: 8000,
-  statusMessage: "DoneChan：推送完成通知",
-};
-
 const CODEX_HOOK = {
   type: "command",
   command: "donechan hook",
@@ -197,64 +197,155 @@ const CODEX_HOOK = {
   statusMessage: "DoneChan: pushing done notification",
 };
 
-function cmdInstall(agent: string): number {
-  const entry = entryPath();
-  switch (agent) {
-    case "zcode": {
-      const hook = JSON.parse(JSON.stringify(ZCODE_HOOK));
-      hook.args = [entry, "hook"];
-      out("// 合并进 ~/.zcode/cli/config.json（用户级）或 <repo>/.zcode/config.json（项目级）：");
-      out(JSON.stringify({ hooks: { enabled: true, events: { Stop: [{ hooks: [hook] }] } } }, null, 2));
-      break;
-    }
-    case "codex": {
-      const hook = JSON.parse(JSON.stringify(CODEX_HOOK));
-      // Codex command hooks run through a shell; quote the entry path so
-      // spaces and shell metacharacters cannot break or inject the command.
-      hook.command = `node ${shellQuote(entry, "posix")} hook`;
-      hook.commandWindows = `node ${shellQuote(entry, "win")} hook`;
-      out("// 写入 ~/.codex/hooks.json：");
-      out(JSON.stringify({ hooks: { Stop: [{ hooks: [hook] }] } }, null, 2));
-      out("// 注意：Codex 首次加载该 hook 会提示信任确认。");
-      break;
-    }
-    case "claude": {
-      out("// 合并进 ~/.claude/settings.json：");
-      out(
-        JSON.stringify(
-          {
-            hooks: {
-              Stop: [
-                {
-                  hooks: [
-                    {
-                      type: "command",
-                      // Claude command hooks run through the OS shell; pick
-                      // quoting per platform so Windows cmd.exe gets double
-                      // quotes instead of POSIX single quotes it ignores.
-                      command: `node ${shellQuote(entry, "posix")} hook`,
-                      commandWindows: `node ${shellQuote(entry, "win")} hook`,
-                      async: true,
-                      timeout: 15,
-                    },
-                  ],
-                },
-              ],
-            },
-          },
-          null,
-          2,
-        ),
-      );
-      break;
-    }
-    default:
-      err(`unknown agent "${agent}" (supported: zcode | codex | claude)`);
-      return 1;
+/**
+ * Interactive install for one agent (or all): preflight the sendkey, detect
+ * existing wiring, confirm, then write the agent config and the marker-protocol
+ * skill in place. `--print` shows the would-be config instead of writing.
+ */
+async function cmdInstallInteractive(targets: string[], printOnly: boolean): Promise<number> {
+  const agents: AgentName[] = targets.includes("all")
+    ? AGENTS
+    : targets.filter((t): t is AgentName => (AGENTS as string[]).includes(t));
+  if (agents.length === 0) {
+    err(`usage: donechan install <${AGENTS.join("|")}|all> [--print]`);
+    return 1;
   }
-  out("");
-  out(`// 并确保已配置 sendkey：{"sendkey": "..."} → ${userConfigPath()}`);
-  return 0;
+  if (!printOnly && !checkSendKey()) return 1;
+
+  let failures = 0;
+  const batch = agents.length > 1;
+  for (const agent of agents) {
+    if (agents.length > 1) out("");
+    const result = await installAgent(agent, printOnly, batch);
+    if (result !== 0) failures += 1;
+  }
+  return failures > 0 ? 1 : 0;
+}
+
+async function installAgent(agent: AgentName, printOnly: boolean, batch: boolean): Promise<number> {
+  const entry = entryPath();
+  const version = VERSION;
+  const skillSource = agent === "codex" ? codexSkillSourceFile(entry) : skillSourceFile(entry);
+
+  if (printOnly) {
+    switch (agent) {
+      case "zcode":
+        out(`// 合并进 ${zcodeConfigPath()}：`);
+        out(JSON.stringify({ hooks: buildZcodeHooks(entry, version) }, null, 2));
+        break;
+      case "codex": {
+        const hook = JSON.parse(JSON.stringify(CODEX_HOOK));
+        hook.command = `node ${shellQuote(entry, process.platform === "win32" ? "win" : "posix")} hook`;
+        hook.commandWindows = `node ${shellQuote(entry, "win")} hook`;
+        out(`// 写入 ${codexConfigPath()}：`);
+        out(JSON.stringify({ hooks: { Stop: [{ hooks: [hook] }] } }, null, 2));
+        out("// 注意：Codex 首次加载该 hook 会提示信任确认。");
+        out(`// Codex 专用 skill / Codex skill: ${skillTargetDir("codex")}`);
+        break;
+      }
+      case "claude":
+        out(`// 合并进 ${claudeConfigPath()}：`);
+        out(JSON.stringify({ hooks: buildClaudeHooks(entry, version) }, null, 2));
+        break;
+      case "opencode":
+        out(`// 写入 ${opencodePluginPath()}：`);
+        out(opencodePluginSource(entry, version));
+        break;
+    }
+    out(`// skill 安装位置 / skill target: ${skillTargetDir(agent)}`);
+    out(`// 并确保已配置 sendkey：{"sendkey": "..."} → ${userConfigPath()}`);
+    return 0;
+  }
+
+  // Plan + confirm + write.
+  const plan = (() => {
+    switch (agent) {
+      case "zcode":
+        return planZcodeInstall();
+      case "codex":
+        return planCodexInstall();
+      case "claude":
+        return planClaudeInstall();
+      case "opencode":
+        return planOpencodeInstall();
+    }
+  })();
+
+  if (plan.existing === "unknown") {
+    err(`✗ ${plan.configPath} 不是有效 JSON，无法安全合并 / not valid JSON, refusing to merge`);
+    err("  请手动修复该文件后重试，或使用 donechan install " + agent + " --print 只打印配置。");
+    return 1;
+  }
+
+  const answer = await confirmPlan(plan, out, batch);
+  if (!answer.proceed) {
+    out("已取消，未做任何修改 / cancelled, nothing written");
+    return 0;
+  }
+
+  try {
+    // 1. Agent config.
+    if (agent === "opencode") {
+      mkdirSync(dirname(plan.configPath), { recursive: true });
+      writeFileSync(plan.configPath, opencodePluginSource(entry, version));
+    } else {
+      // ZCode/Codex: events live under hooks.events.Stop. Claude Code keeps
+      // Stop directly under hooks (no events wrapper).
+      const hooksBlock = agent === "zcode"
+        ? buildZcodeHooks(entry, version)
+        : agent === "codex"
+          ? buildCodexHooks(entry, version)
+          : buildClaudeHooks(entry, version);
+      const { root } = readJsonRoot(plan.configPath);
+      let merged: Record<string, unknown>;
+      if (agent === "claude") {
+        merged = mergeClaudeHooks(root, hooksBlock);
+      } else {
+        merged = plan.fileExists ? mergeHooks(root, hooksBlock) : { hooks: hooksBlock };
+      }
+      mkdirSync(dirname(plan.configPath), { recursive: true });
+      writeFileSync(plan.configPath, JSON.stringify(merged, null, 2) + "\n");
+    }
+    out(`✅ 已写入 ${plan.configPath}`);
+
+    // Codex hooks require a one-time manual trust confirmation.
+    if (agent === "codex") {
+      out("➡ 前往 Codex 设置 → 钩子 → 用户配置，点击“信任”该 DoneChan 钩子。");
+      out("   Go to Codex Settings → Hooks → User config and click Trust on the DoneChan hook.");
+    }
+
+    // 2. Skill — only when the user opted in (declining still leaves the hook
+    //    working via the template fallback; the AI just won't auto-write markers).
+    if (!answer.installSkill) {
+      out("ℹ 已跳过 skill 安装（AI 将只发模板兜底通知，不自动写标记）/ skill skipped; template fallback only");
+      return 0;
+    }
+    const skillResult = installSkill(agent, version, entry, skillSource);
+    if (skillResult === "copied") {
+      out(`✅ skill 已安装 / skill installed → ${agent === "opencode" ? plan.skillDir + "/AGENTS.md" : skillTargetDir(agent) + "/SKILL.md"}`);
+    } else if (skillResult === "already") {
+      out("ℹ skill 已存在，跳过 / skill already installed");
+    } else {
+      err(`⚠ skill 源文件缺失（不影响钩子工作）/ skill source missing; the hook still works`);
+    }
+    return 0;
+  } catch (e) {
+    err(`✗ 写入失败 / write failed: ${e instanceof Error ? e.message : e}`);
+    return 1;
+  }
+}
+
+function readJsonRoot(path: string): { ok: boolean; root: Record<string, unknown> } {
+  if (!existsSync(path)) return { ok: true, root: {} };
+  try {
+    const parsed: unknown = JSON.parse(readFileSync(path, "utf8"));
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      return { ok: true, root: parsed as Record<string, unknown> };
+    }
+    return { ok: false, root: {} };
+  } catch {
+    return { ok: false, root: {} };
+  }
 }
 
 /**
@@ -320,17 +411,133 @@ function cmdLogin(sendKey: string): number {
   return 0;
 }
 
+/** Settable config keys for `donechan config <key> [value]`. */
+interface ConfigKeyMeta {
+  desc: string;
+  secret?: boolean;
+  validate?: (v: string) => true | string;
+}
+
+const CONFIG_KEYS: Record<string, ConfigKeyMeta> = {
+  sendkey: {
+    desc: "Server酱³ SendKey（sctp...t... 或 SCT...）",
+    secret: true,
+    validate: (v) => (isValidSendKey(v) ? true : "invalid sendkey format (expected sctp<uid>t<secret> or SCT...)"),
+  },
+  title_prefix: {
+    desc: "通知标题前缀（如 [DoneChan]），留空清除",
+  },
+  tags: {
+    desc: "追加在 agent 标签（ZCode 等）之后的静态标签，竖线分隔，留空清除",
+  },
+  marker_tags_enabled: {
+    desc: "是否放行 AI 在 marker 里写的标签（默认 false，防止标签无限增长）",
+    validate: (v) => (["true", "false"].includes(v.toLowerCase()) ? true : "must be true or false"),
+  },
+};
+
+/** `donechan config` — read/write ~/.donechan/config.json fields. */
+function cmdConfig(args: string[]): number {
+  const [key, ...rest] = args;
+  if (!key || key === "list" || key === "--list") {
+    out(`配置文件 / config file: ${userConfigPath()}`);
+    for (const [name, meta] of Object.entries(CONFIG_KEYS)) {
+      const current = readConfigKey(name);
+      const shown = meta.secret && current ? `${current.slice(0, 7)}***` : (current ?? "(未设置 / unset)");
+      out(`  ${name.padEnd(20)} ${shown}  — ${meta.desc}`);
+    }
+    return 0;
+  }
+  if (!(key in CONFIG_KEYS)) {
+    err(`unknown config key: ${key}`);
+    out(`available: ${Object.keys(CONFIG_KEYS).join(" | ")}`);
+    return 1;
+  }
+  const meta = CONFIG_KEYS[key];
+  const value = rest.join(" ");
+
+  // Read current file.
+  const path = userConfigPath();
+  let root: Record<string, unknown> = {};
+  if (existsSync(path)) {
+    try {
+      const parsed: unknown = JSON.parse(readFileSync(path, "utf8"));
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) root = parsed as Record<string, unknown>;
+    } catch {
+      err(`✗ ${path} 不是有效 JSON，请先修复或删除 / not valid JSON`);
+      return 1;
+    }
+  }
+
+  // Read: `donechan config <key>`
+  if (value === "") {
+    const current = root[key];
+    if (meta.secret && typeof current === "string" && current) {
+      out(`${key} = ${current.slice(0, 7)}***`);
+    } else {
+      out(`${key} = ${current ?? "(未设置 / unset)"}`);
+    }
+    return 0;
+  }
+
+  // Write: `donechan config <key> <value>`; empty string clears the key.
+  if (meta.validate) {
+    const verdict = meta.validate(value);
+    if (verdict !== true) {
+      err(`✗ ${verdict}`);
+      return 1;
+    }
+  }
+  const normalized = meta.validate && key === "marker_tags_enabled" ? value.toLowerCase() : value;
+  if (normalized === "") delete root[key];
+  else root[key] = normalized;
+  mkdirSync(dirname(path), { recursive: true });
+  try {
+    atomicWritePrivate(path, JSON.stringify(root, null, 2));
+  } catch (e) {
+    err(`✗ 写入失败 / write failed: ${e instanceof Error ? e.message : e}`);
+    return 1;
+  }
+  out(`✅ ${key} 已保存 / saved → ${path}`);
+  return 0;
+}
+
+function readConfigKey(key: string): string | undefined {
+  const path = userConfigPath();
+  if (!existsSync(path)) return undefined;
+  try {
+    const parsed: unknown = JSON.parse(readFileSync(path, "utf8"));
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      const v = (parsed as Record<string, unknown>)[key];
+      return v === undefined ? undefined : String(v);
+    }
+  } catch {
+    /* unreadable config shows as unset */
+  }
+  return undefined;
+}
+
 function usage(): number {
   out(`DoneChan v${VERSION} — AI 任务完成通知（Server酱³）
 
 用法:
-  donechan hook [json]     hook 统一入口（stdin 或 argv JSON），绝不阻塞
+  donechan hook [json]     hook 统一入口（stdin 或 argv JSON），非阻塞
   donechan send [标题]     发送测试通知（-b 正文）
   donechan check           校验配置
-  donechan install <agent> 打印 agent 接入配置（zcode | codex | claude）
-  donechan login <sendkey> 把 sendkey 写入 ~/.donechan/config.json
+  donechan install <agent|all> [--print]
+                           交互式接入 agent（zcode | codex | claude | opencode | all），
+                           自动写入钩子配置和 donechan-notify skill；--print 仅打印
+  donechan config          查看全部配置
+  donechan config <key> [<value>]
+                           读取/设置配置项（写入值为空字符串即清除）：
+                             sendkey               Server酱³ SendKey
+                             title_prefix          标题前缀，留空清除
+                             tags                  静态标签（竖线分隔），追加在 ZCode 等 agent 标签后
+                             marker_tags_enabled   是否放行 AI 生成的标签（true/false，默认 false）
+  donechan login <sendkey> 等价于 config sendkey <sendkey>
   donechan --version       版本号
 
+配置文件: ~/.donechan/config.json（项目级 <repo>/.donechan/config.json 优先）
 文档: https://github.com/SnowSwordScholar/DoneChan`);
   return 0;
 }
@@ -355,10 +562,15 @@ async function main(): Promise<number> {
       return cmdSend(rest);
     case "check":
       return cmdCheck();
-    case "install":
-      return rest[0] ? cmdInstall(rest[0]) : (err("usage: donechan install <zcode|codex|claude>"), 1);
+    case "install": {
+      const agents = rest.filter((a) => a !== "--print");
+      const printOnly = rest.includes("--print");
+      return await cmdInstallInteractive(agents, printOnly);
+    }
     case "login":
       return rest[0] ? cmdLogin(rest[0]) : (err("usage: donechan login <sendkey>"), 1);
+    case "config":
+      return cmdConfig(rest);
     default:
       err(`unknown command: ${cmd}`);
       return usage();

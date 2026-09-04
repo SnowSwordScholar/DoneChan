@@ -1,4 +1,5 @@
 import type { AgentId, DoneEvent } from "./types.js";
+import { readLastAssistantText } from "./transcript.js";
 
 /**
  * Raw hook payloads, keyed by the wire format each agent uses.
@@ -21,6 +22,7 @@ interface ZCodeStopInput {
   stopHookActive?: boolean;
   toolCallCount?: number;
   timestamp?: string;
+  transcript_path?: string;
 }
 
 interface CodexStopInput {
@@ -32,6 +34,7 @@ interface CodexStopInput {
   permission_mode?: string;
   stop_hook_active?: boolean;
   last_assistant_message?: string | null;
+  transcript_path?: string | null;
 }
 
 interface CodexLegacyNotifyInput {
@@ -99,10 +102,18 @@ export function normalize(input: unknown): DoneEvent | null {
   }
 
   const common = input as ZCodeStopInput & CodexStopInput;
+  let lastAssistantMessage = lastAssistantText(input);
+  // Claude Code's Stop payload carries no reply text — only `transcript_path`.
+  // Recover the final assistant reply from the transcript so the marker
+  // protocol works; without this every Claude notification degrades to the
+  // "（无回复内容）" template.
+  if (!lastAssistantMessage && typeof common.transcript_path === "string" && common.transcript_path) {
+    lastAssistantMessage = readLastAssistantText(common.transcript_path);
+  }
   return {
     agent,
     cwd: str(common.cwd) ?? process.cwd(),
-    lastAssistantMessage: lastAssistantText(input),
+    lastAssistantMessage,
     userMessages: [],
     sessionId: str(common.session_id) ?? str(common.sessionId),
     stopHookActive: common.stop_hook_active === true || common.stopHookActive === true,

@@ -2,10 +2,10 @@
 
 # DoneChan
 
-**The AI tells you, itself, that the task is done.**
+**The AI tells you itself: Your Majesty, the task is done. What's next?**
 
-Push task-done notifications to your phone via ServerChan³, with content
-defined by the AI.
+Push task-done notifications to your phone via ServerChan³, so you can be a
+better black-hearted boss.
 
 Works with: **ZCode · Codex · Claude Code**
 
@@ -19,14 +19,15 @@ Works with: **ZCode · Codex · Claude Code**
 
 ---
 
-## Why DoneChan
+## What is DoneChan
 
-Existing agent notifiers can only say "task finished". To know what was done
-and whether anything needs attention, you still have to go back to the
-computer.
-DoneChan flips it: when the AI finishes a task, it writes a hidden marker into
-its final reply saying what it wants you to know, and DoneChan pushes that to
-your phone. No second LLM call, no extra API key.
+While working with Codex or other agents, you want to keep them going like a
+black-hearted boss, but none of these tools notifies you well: a system
+notification and a beep at best, a sign-up requiring your phone number at
+worst. DoneChan gives you, the boss, a proper way to know when a task is
+done — it pushes a ServerChan³ notification to your phone. In bed or out for
+dinner, you'll know your "employee" has finished and you can hand down the
+next task before they slack off.
 
 > Community project, not affiliated with ZCode, OpenAI, or Anthropic.
 
@@ -90,7 +91,7 @@ paths:
 | Codex | Write the output to `~/.codex/hooks.json` (trust prompt on first load is expected); legacy versions: `adapters/codex/notify.toml` |
 | Claude Code | Merge the output into `~/.claude/settings.json` |
 
-To teach the AI the marker protocol, install
+To teach ZCode and Claude Code the HTML-comment marker protocol, install
 [`skills/donechan-notify/SKILL.md`](skills/donechan-notify/SKILL.md) as an
 agent skill or paste it into your `AGENTS.md`.
 
@@ -105,6 +106,14 @@ the content is pushed verbatim):
 
 Fields: `title` (required) · `desp` Markdown body · `short` card summary ·
 `tags` pipe-separated labels.
+
+Codex uses a separate skill and must not emit HTML comments (Codex renders them
+visibly). Install `skills/donechan-notify-codex` as `~/.codex/skills/donechan-notify`
+and encode the same JSON as a base64url hidden link:
+
+```text
+[](donechan://<base64url(JSON)>)
+```
 
 ## CLI
 

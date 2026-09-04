@@ -2,9 +2,9 @@
 
 # DoneChan
 
-**让 AI 亲手告诉你：任务做完了。**
+**让 AI 亲手告诉你：陛下，您的任务做完了，接下来有何吩咐**
 
-通过 Server酱³ 把任务完成通知推到手机，通知内容由 AI 自己定义。
+通过 Server酱³ 把任务完成通知推到手机，让你更好地当个黑心老板。
 
 支持 / Works with: **ZCode · Codex · Claude Code**
 
@@ -18,11 +18,10 @@
 
 ---
 
-## 为什么是 DoneChan
+## 何为 DoneChan
 
-现有的 agent 通知工具只会喊"任务完成了"，至于做完了什么、有没有风险，你还得回电脑
-前自己看。DoneChan 反过来：AI 完成任务时，在回复末尾用一条隐藏标记写下它想告诉你的话，
-DoneChan 把这句话推到你手机上。不调用第二次 LLM，也不需要额外的 API Key。
+使用 Codex 和其他 Agent 时候，总是想要像黑心老板一样让 Agent 不停歇，但是这些软件并没有一个很好的通知方式，要么是只通过系统通知和一声提示，要么需要注册并验证手机号。DoneChan 为身为老板的你添加了一个更方便的通知方式——当任务完成时通过 Server酱³ 推送通知到手机上，哪怕躺在床上或者出去吃饭也能直接知道自己的“员工”完成了任务，可以马上下达下一步的命令让员工无法继续摸鱼。
+
 
 > 社区项目，与 ZCode / OpenAI / Anthropic 官方无关。
 
@@ -84,6 +83,8 @@ donechan send "hello"        # 手机收到即成功
 接入标记协议 — 把
 [`skills/donechan-notify/SKILL.md`](skills/donechan-notify/SKILL.md)
 装为 agent 技能，或把其中内容贴进 `AGENTS.md`。从此 AI 完成任务时自动定制通知。
+注意：ZCode、Claude Code 等使用 HTML 注释（见下）；Codex 会把 HTML 注释渲染成
+可见文本，必须改用单独的 Codex skill 输出不可见的 `donechan://` Markdown 链接。
 
 ## 让 AI 定义通知
 
@@ -91,6 +92,13 @@ AI 在回复末尾追加（DoneChan 会隐藏这条注释，内容原样推送�
 
 ```html
 <!--donechan: {"title": "✅ 支付回调 bug 已修复", "desp": "**修复**：加幂等校验\n**回归**：12/12 通过\n**风险**：沙箱再验一次", "short": "掉单已修复", "tags": "后端|bugfix"}-->
+```
+
+Codex 专用格式（安装 `skills/donechan-notify-codex` 到
+`~/.codex/skills/donechan-notify`）：
+
+```text
+[](donechan://<base64url(JSON)>)
 ```
 
 字段：`title`（必填）· `desp` Markdown 正文 · `short` 卡片摘要 · `tags` 竖线分隔标签。

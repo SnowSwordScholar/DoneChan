@@ -107,7 +107,11 @@ describe("push", () => {
   it("accepts the documented official key shapes", async () => {
     expect(isValidSendKey("sctp12345tAbCdEfGhIjKlMnOpQrStUv")).toBe(true);
     expect(isValidSendKey("SCT12345ABCDE")).toBe(true);
+    // Real-world SC3 keys include hyphens/underscores in the random tail.
+    expect(isValidSendKey("sctp903ta-oxx2B_c9-d3")).toBe(true);
     expect(isValidSendKey("sctp12345tбуc")).toBe(false);
     expect(isValidSendKey("SCT/foo?x=1")).toBe(false);
+    expect(isValidSendKey("sctp12345t/../../etc")).toBe(false);
+    expect(isValidSendKey("sctp12345t?x=1")).toBe(false);
   });
 });

@@ -33,6 +33,24 @@ describe("extractMarker", () => {
     expect(m.title).toBe("T");
   });
 
+  it("accepts a Markdown-escaped opening comment", () => {
+    const m = extractMarker('回复\n\\<!--donechan: {"title":"T"}-->')!;
+    expect(m.title).toBe("T");
+  });
+
+  it("accepts Codex hidden-link markers when enabled", () => {
+    const encoded = Buffer.from(JSON.stringify({ title: "隐藏标题", desp: "隐藏正文" }), "utf8").toString("base64url");
+    const text = `回复\n[](${"donechan://"}${encoded})`;
+    const m = extractMarker(text, { allowCodexHidden: true })!;
+    expect(m.title).toBe("隐藏标题");
+    expect(m.desp).toBe("隐藏正文");
+  });
+
+  it("does not accept Codex hidden-link markers unless enabled", () => {
+    const encoded = Buffer.from(JSON.stringify({ title: "T" }), "utf8").toString("base64url");
+    expect(extractMarker(`[](${"donechan://"}${encoded})`)).toBeNull();
+  });
+
   it("ignores a marker quoted in the middle of the body", () => {
     const text = '示例如下 <!--donechan: {"title":"误报"}--> 正文继续\n这就是个例子';
     expect(extractMarker(text)).toBeNull();

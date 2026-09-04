@@ -15,13 +15,21 @@ import { isValidSendKey } from "../channel/serverchan.js";
 export interface DoneChanConfig {
   sendKey: string;
   titlePrefix?: string;
+  /** Static tags appended after the agent tag (ZCode / Codex / ClaudeCode). */
   tags?: string;
+  /**
+   * When true, tags the AI writes in the marker are allowed through in
+   * addition to the agent tag. Off by default: AI-chosen tags accumulate
+   * unboundedly in the app's tag list.
+   */
+  markerTagsEnabled: boolean;
 }
 
 interface ConfigFile {
   sendkey?: string;
   title_prefix?: string;
   tags?: string;
+  marker_tags_enabled?: boolean;
 }
 
 function readConfigFile(path: string): ConfigFile | null {
@@ -63,9 +71,16 @@ export function loadConfig(eventCwd: string): DoneChanConfig | null {
   sendKey = sendKey || projectFile?.sendkey || userFile?.sendkey || "";
   titlePrefix = titlePrefix || projectFile?.title_prefix || userFile?.title_prefix || "";
   tags = tags || projectFile?.tags || userFile?.tags || "";
+  const markerTagsEnabled =
+    projectFile?.marker_tags_enabled ?? userFile?.marker_tags_enabled ?? false;
 
   if (!sendKey || !isValidSendKey(sendKey)) return null;
-  return { sendKey, titlePrefix: titlePrefix || undefined, tags: tags || undefined };
+  return {
+    sendKey,
+    titlePrefix: titlePrefix || undefined,
+    tags: tags || undefined,
+    markerTagsEnabled,
+  };
 }
 
 /** Where a user-level config file lives (for `donechan install`). */

@@ -34,9 +34,15 @@ export function setMinIntervalMs(ms: number): void {
 
 let lastSendAt = 0;
 
-/** Official SendKey shapes: SC3 `sctp<digits>t<random>`, Turbo `SCT<random>`. */
-const SC3_KEY_RE = /^sctp\d+t[A-Za-z0-9]+$/u;
-const TURBO_KEY_RE = /^SCT[A-Za-z0-9]+$/u;
+/**
+ * Official SendKey shapes: SC3 `sctp<digits>t<random>`, Turbo `SCT<random>`.
+ * The random tail is observed to include hyphens/underscores (e.g.
+ * `sctp903ta-oxx2…`), so it is validated as RFC 3986 unreserved characters —
+ * broad enough for real keys, but still rejects path/query injection (`/ ? &`
+ * etc.) before the key is ever embedded into a URL.
+ */
+const SC3_KEY_RE = /^sctp\d+t[A-Za-z0-9_.~-]+$/u;
+const TURBO_KEY_RE = /^SCT[A-Za-z0-9_.~-]+$/u;
 
 /** True when the key matches the official SendKey format (either generation). */
 export function isValidSendKey(sendKey: string): boolean {
@@ -125,7 +131,7 @@ function describeError(err: unknown): string {
  */
 function redactSendKey(message: string): string {
   return message
-    .replace(/sctp\d+t[A-Za-z0-9]+/gu, "<sendkey>")
-    .replace(/SCT[A-Za-z0-9]+/gu, "<sendkey>")
+    .replace(/sctp\d+t[A-Za-z0-9_.~-]+/gu, "<sendkey>")
+    .replace(/SCT[A-Za-z0-9_.~-]+/gu, "<sendkey>")
     .replace(/(https?:\/\/)[^\s"'`<>]+/giu, "$1<url>");
 }
