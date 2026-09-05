@@ -3,7 +3,7 @@
 All notable changes to DoneChan will be documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [Unreleased]
+## [0.2.0] - 2026-09-06
 
 ### Added
 
@@ -21,11 +21,14 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `message.updated`, then pipes it into `donechan hook`.
 - `donechan config` CLI to list/read/write `sendkey`, `title_prefix`, `tags`,
   and `marker_tags_enabled` with atomic writes.
+- `repository`, `homepage`, `bugs`, and `author` in package.json, so the npm
+  page links back to GitHub.
 
 ### Changed
 
 - The push transport now forces IPv4: ServerChan³'s backend rejects requests
   arriving over IPv6 ("Data too long for column 'ip'").
+- package.json description and keywords now mention OpenCode.
 
 ### Fixed
 
@@ -34,6 +37,10 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   under `hooks` without the Codex-incompatible `enabled: true` flag.
 - OpenCode notifications were mislabeled as Claude Code; they now carry the
   `OpenCode` tag.
+- The OpenCode plugin now spawns `donechan hook` via `node:child_process`
+  instead of Bun's `$` shell: the desktop app runs its server on Node where
+  `$` is undefined, so the old shell template threw on every event it
+  handled and the error was swallowed by the plugin's catch-all.
 
 ## [0.1.0] - 2026-09-02
 

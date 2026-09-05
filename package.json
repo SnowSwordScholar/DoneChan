@@ -1,8 +1,15 @@
 {
   "name": "donechan",
-  "version": "0.1.0",
-  "description": "AI-task-done notifications via ServerChan³ for ZCode, Codex and Claude Code — the notification content is defined by the AI itself.",
+  "version": "0.2.0",
+  "description": "AI-task-done notifications via ServerChan³ for ZCode, Codex, Claude Code and OpenCode — the notification content is defined by the AI itself.",
   "license": "MIT",
+  "author": "雪剑书生 <73566969+SnowSwordScholar@users.noreply.github.com> (https://github.com/SnowSwordScholar)",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/SnowSwordScholar/DoneChan.git"
+  },
+  "homepage": "https://github.com/SnowSwordScholar/DoneChan#readme",
+  "bugs": "https://github.com/SnowSwordScholar/DoneChan/issues",
   "type": "module",
   "bin": {
     "donechan": "dist/cli.js"
@@ -22,6 +29,7 @@
     "zcode",
     "codex",
     "claude-code",
+    "opencode",
     "hooks",
     "serverchan",
     "serverchan3",
