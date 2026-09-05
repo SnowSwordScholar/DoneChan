@@ -22,3 +22,6 @@ Desktop.ini
 .idea/
 .vscode/*
 !.vscode/extensions.json
+
+# ZCode / agent workspace configs created automatically in this repo
+.zcode/

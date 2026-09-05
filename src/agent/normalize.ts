@@ -37,6 +37,15 @@ interface CodexStopInput {
   transcript_path?: string | null;
 }
 
+/** Payload produced by the DoneChan OpenCode plugin (src/agent/opencode.ts). */
+interface OpenCodeStopInput {
+  hook_event_name?: string;
+  source_agent?: string;
+  session_id?: string;
+  cwd?: string;
+  last_assistant_message?: string | null;
+}
+
 interface CodexLegacyNotifyInput {
   type?: string;
   "thread-id"?: string;
@@ -47,7 +56,7 @@ interface CodexLegacyNotifyInput {
   "last-assistant-message"?: string | null;
 }
 
-export type RawHookInput = ZCodeStopInput | CodexStopInput | CodexLegacyNotifyInput;
+export type RawHookInput = ZCodeStopInput | CodexStopInput | CodexLegacyNotifyInput | OpenCodeStopInput;
 
 function asRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -79,6 +88,9 @@ export function detectAgent(input: unknown): AgentId | null {
   if ("responseText" in input || "responsePreview" in input || "toolCallCount" in input) {
     return "zcode";
   }
+  // OpenCode's plugin (src/agent/opencode.ts) reports itself explicitly; its
+  // payload shape is otherwise indistinguishable from a Claude Stop payload.
+  if (input.source_agent === "opencode") return "opencode";
   if (typeof input.model === "string") return "codex";
   return "claude";
 }

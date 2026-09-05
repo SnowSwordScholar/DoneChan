@@ -6,6 +6,7 @@ export const AGENT_TAG: Record<AgentId, string> = {
   codex: "Codex",
   "codex-legacy": "Codex",
   claude: "ClaudeCode",
+  opencode: "OpenCode",
 };
 
 /**

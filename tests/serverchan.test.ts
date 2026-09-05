@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { endpointFor, isValidSendKey, push, setMinIntervalMs, uidFromSendKey } from "../src/channel/serverchan.js";
+import { endpointFor, isValidSendKey, push, setMinIntervalMs, uidFromSendKey, _setHttpPostForTests } from "../src/channel/serverchan.js";
 
 describe("sendkey handling", () => {
   beforeEach(() => setMinIntervalMs(0));
@@ -22,71 +22,61 @@ describe("sendkey handling", () => {
 });
 
 describe("push", () => {
+  let lastPost: { url: string; body: string } | null = null;
+  beforeEach(() => setMinIntervalMs(0));
   afterEach(() => {
+    _setHttpPostForTests(null); // restore the real IPv4 transport
     vi.restoreAllMocks();
   });
 
   it("returns ok on code 0", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () => new Response(JSON.stringify({ code: 0, message: "ok", data: { pushid: "p1" } }), { status: 200 })),
-    );
+    _setHttpPostForTests(async () => ({ status: 200, text: JSON.stringify({ code: 0, message: "ok", data: { pushid: "p1" } }) }));
     const r = await push("sctp12345tAbCdEf", { title: "t" });
     expect(r.ok).toBe(true);
     expect(r.pushId).toBe("p1");
   });
 
   it("reports server rejection with message", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () => new Response(JSON.stringify({ code: 1024, message: "内容重复" }), { status: 200 })),
-    );
+    _setHttpPostForTests(async () => ({ status: 200, text: JSON.stringify({ code: 1024, message: "内容重复" }) }));
     const r = await push("sctp12345tAbCdEf", { title: "t" });
     expect(r.ok).toBe(false);
     expect(r.message).toContain("内容重复");
   });
 
   it("reports non-JSON responses", async () => {
-    vi.stubGlobal("fetch", vi.fn(async () => new Response("<html>oops</html>", { status: 500 })));
+    _setHttpPostForTests(async () => ({ status: 500, text: "<html>oops</html>" }));
     const r = await push("sctp12345tAbCdEf", { title: "t" });
     expect(r.ok).toBe(false);
     expect(r.message).toContain("non-JSON");
   });
 
   it("reports timeout", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(
-        (_url: string, init?: RequestInit) =>
-          new Promise<Response>((_resolve, reject) => {
-            init?.signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")));
-          }),
-      ),
-    );
+    _setHttpPostForTests(async () => {
+      const e: NodeJS.ErrnoException = new Error("timeout");
+      e.name = "AbortError";
+      throw e;
+    });
     const r = await push("sctp12345tAbCdEf", { title: "t" }, 30);
     expect(r.ok).toBe(false);
     expect(r.message).toBe("timeout");
   });
 
-  it("sends title/desp/short/tags as JSON body", async () => {
-    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ code: 0 }), { status: 200 }));
-    vi.stubGlobal("fetch", fetchMock);
+  it("sends title/desp/short/tags as JSON body to the right endpoint", async () => {
+    lastPost = null;
+    _setHttpPostForTests(async (url, body) => {
+      lastPost = { url, body };
+      return { status: 200, text: JSON.stringify({ code: 0 }) };
+    });
     await push("sctp12345tAbCdEf", { title: "T", desp: "D", short: "S", tags: "a|b" });
-    const [url, init] = fetchMock.mock.calls[0]! as unknown as [string, RequestInit];
-    expect(url).toContain("12345.push.ft07.com");
-    expect(JSON.parse(String(init.body))).toEqual({ title: "T", desp: "D", short: "S", tags: "a|b" });
+    expect(lastPost!.url).toContain("12345.push.ft07.com");
+    expect(JSON.parse(lastPost!.body)).toEqual({ title: "T", desp: "D", short: "S", tags: "a|b" });
   });
 
   it("never leaks the sendkey even when the error embeds the full request URL", async () => {
     const key = "sctp12345tSuperSecretValue99";
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () => {
-        throw new Error(
-          `request to https://12345.push.ft07.com/send/${key}.send failed: ECONNRESET`,
-        );
-      }),
-    );
+    _setHttpPostForTests(async (url) => {
+      throw new Error(`request to ${url} failed: ECONNRESET`);
+    });
     const r = await push(key, { title: "t" });
     expect(r.ok).toBe(false);
     expect(r.message).not.toContain("SuperSecretValue99");
@@ -96,7 +86,7 @@ describe("push", () => {
   });
 
   it("rejects sendkeys that do not match the official format", async () => {
-    // No fetch stub: push must bail out before any network call.
+    // No transport stub: push must bail out before any network call.
     for (const bad of ["SCT/foo?x=1", "sctpabcTx", "sctp12345t", "hello", "SCT with space", "sctp12345tбуc"]) {
       const r = await push(bad, { title: "t" });
       expect(r.ok, bad).toBe(false);

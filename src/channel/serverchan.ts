@@ -7,6 +7,8 @@
  * Success: JSON body with code === 0.
  */
 
+import { request as httpsRequest } from "node:https";
+
 export interface PushPayload {
   title: string;
   desp?: string;
@@ -75,6 +77,57 @@ function pace(): Promise<void> {
   return wait > 0 ? new Promise((resolve) => setTimeout(resolve, wait)) : Promise.resolve();
 }
 
+/**
+ * The outbound HTTPS POST, isolated so tests can inject a fake. Forces IPv4
+ * (`family: 4`): ServerChan³'s backend stores the client IP in a column sized
+ * for IPv4, so a request arriving over IPv6 is rejected with
+ * "Data too long for column 'ip'". ServerChan is IPv4-only, so IPv4 is
+ * always the correct — and only working — route.
+ */
+type HttpPost = (url: string, body: string, timeoutMs: number) => Promise<{ status: number; text: string }>;
+
+let httpPost: HttpPost = realHttpsPost;
+
+/** Override the transport for tests. */
+export function _setHttpPostForTests(fn: HttpPost | null): void {
+  httpPost = fn ?? realHttpsPost;
+}
+
+function realHttpsPost(url: string, body: string, timeoutMs: number): Promise<{ status: number; text: string }> {
+  return new Promise((resolve, reject) => {
+    const req = httpsRequest(
+      url,
+      {
+        method: "POST",
+        family: 4, // force IPv4 — see HttpPost docblock
+        headers: { "Content-Type": "application/json;charset=utf-8" },
+      },
+      (res) => {
+        const chunks: Buffer[] = [];
+        res.on("data", (c: Buffer) => chunks.push(c));
+        res.on("end", () => {
+          clearTimeout(timer);
+          resolve({ status: res.statusCode ?? 0, text: Buffer.concat(chunks).toString("utf8") });
+        });
+        // Mid-body socket failures surface on the response stream; route them
+        // through the request's 'error' so the promise rejects with the real
+        // cause instead of an unhandled 'error' crashing a detached worker.
+        res.on("error", (err: Error) => req.destroy(err));
+      },
+    );
+    const timer = setTimeout(() => {
+      const e: NodeJS.ErrnoException = new Error("timeout");
+      e.name = "AbortError";
+      req.destroy(e);
+    }, timeoutMs);
+    req.on("error", (err: Error) => {
+      clearTimeout(timer);
+      reject(err);
+    });
+    req.end(body);
+  });
+}
+
 export async function push(
   sendKey: string,
   payload: PushPayload,
@@ -87,19 +140,11 @@ export async function push(
 
   await pace();
 
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const response = await fetch(endpoint, {
-      method: "POST",
-      headers: { "Content-Type": "application/json;charset=utf-8" },
-      body: JSON.stringify(payload),
-      signal: controller.signal,
-    });
-    const raw = await response.text();
+    const response = await httpPost(endpoint, JSON.stringify(payload), timeoutMs);
     let json: { code?: unknown; errno?: unknown; message?: unknown; data?: { pushid?: unknown } } = {};
     try {
-      json = JSON.parse(raw);
+      json = JSON.parse(response.text);
     } catch {
       return { ok: false, message: `non-JSON response (HTTP ${response.status})` };
     }
@@ -110,14 +155,12 @@ export async function push(
         : undefined;
       return { ok: true, message: "pushed", pushId };
     }
-    return { ok: false, message: `server rejected: ${String(json.message ?? raw.slice(0, 200))}` };
+    return { ok: false, message: `server rejected: ${String(json.message ?? response.text.slice(0, 200))}` };
   } catch (err) {
     const reason = err instanceof Error && err.name === "AbortError" ? "timeout" : describeError(err);
     // Network errors can embed the full request URL — and the URL carries the
     // SendKey. Strip it before surfacing anything.
     return { ok: false, message: redactSendKey(reason) };
-  } finally {
-    clearTimeout(timer);
   }
 }
 

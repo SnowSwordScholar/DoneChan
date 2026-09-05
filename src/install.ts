@@ -369,11 +369,12 @@ export function mergeHooks(root: Record<string, unknown>, hooksBlock: Record<str
 }
 
 /**
- * Merge a built Claude Stop block into an existing settings.json root. Claude
- * Code keeps Stop groups directly under `hooks` (no `events` wrapper). DoneChan
- * groups are replaced; foreign groups and unrelated keys are preserved.
+ * Merge a built Stop block into an existing config root for agents that keep
+ * Stop groups directly under `hooks` — Codex hooks.json and Claude Code
+ * settings.json (no `events` wrapper, unlike ZCode). DoneChan groups are
+ * replaced; foreign groups and unrelated keys are preserved.
  */
-export function mergeClaudeHooks(root: Record<string, unknown>, stopBlock: Record<string, unknown>): Record<string, unknown> {
+export function mergeStopHooks(root: Record<string, unknown>, stopBlock: Record<string, unknown>): Record<string, unknown> {
   const existingHooks = (root.hooks ?? {}) as Record<string, unknown>;
   const existingStop = Array.isArray(existingHooks.Stop) ? existingHooks.Stop : [];
   const incomingStop = (stopBlock.Stop ?? []) as unknown[];

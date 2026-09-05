@@ -3,7 +3,7 @@
  * agent-hook inputs (ZCode / Codex hooks / Codex legacy notify / Claude Code).
  */
 
-export type AgentId = "zcode" | "codex" | "codex-legacy" | "claude";
+export type AgentId = "zcode" | "codex" | "codex-legacy" | "claude" | "opencode";
 
 /** What the user originally asked the agent to do, when known. */
 export interface DoneEvent {

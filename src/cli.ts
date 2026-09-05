@@ -20,7 +20,7 @@ import { testNotification, resolveTags } from "./notification/presets.js";
 import { isValidSendKey, push } from "./channel/serverchan.js";
 import { loadConfig, userConfigPath } from "./config/load.js";
 import { stageHandoff, spawnDetached, readHandoff, sweepStaleStaging, shellQuoteWin, shellQuotePosix } from "./handoff.js";
-import { checkSendKey, planZcodeInstall, planCodexInstall, planClaudeInstall, planOpencodeInstall, buildZcodeHooks, buildCodexHooks, buildClaudeHooks, mergeHooks, mergeClaudeHooks, confirmPlan, skillTargetDir, skillSourceFile, codexSkillSourceFile, installSkill, AGENTS, type AgentName } from "./install.js";
+import { checkSendKey, planZcodeInstall, planCodexInstall, planClaudeInstall, planOpencodeInstall, buildZcodeHooks, buildCodexHooks, buildClaudeHooks, mergeHooks, mergeStopHooks, confirmPlan, skillTargetDir, skillSourceFile, codexSkillSourceFile, installSkill, AGENTS, type AgentName } from "./install.js";
 import { opencodePluginSource } from "./agent/opencode.js";
 import { codexConfigPath, claudeConfigPath, opencodePluginPath, zcodeConfigPath } from "./install.js";
 
@@ -289,8 +289,8 @@ async function installAgent(agent: AgentName, printOnly: boolean, batch: boolean
       mkdirSync(dirname(plan.configPath), { recursive: true });
       writeFileSync(plan.configPath, opencodePluginSource(entry, version));
     } else {
-      // ZCode/Codex: events live under hooks.events.Stop. Claude Code keeps
-      // Stop directly under hooks (no events wrapper).
+      // ZCode wraps Stop in hooks.events.Stop; Codex and Claude Code both keep
+      // Stop directly under hooks (see adapters/codex/hooks.json).
       const hooksBlock = agent === "zcode"
         ? buildZcodeHooks(entry, version)
         : agent === "codex"
@@ -298,10 +298,12 @@ async function installAgent(agent: AgentName, printOnly: boolean, batch: boolean
           : buildClaudeHooks(entry, version);
       const { root } = readJsonRoot(plan.configPath);
       let merged: Record<string, unknown>;
-      if (agent === "claude") {
-        merged = mergeClaudeHooks(root, hooksBlock);
-      } else {
+      if (agent === "zcode") {
+        // ZCode's merge also forces hooks.enabled — config-file hooks are
+        // disabled by default there; Codex/Claude have no such flag.
         merged = plan.fileExists ? mergeHooks(root, hooksBlock) : { hooks: hooksBlock };
+      } else {
+        merged = mergeStopHooks(root, hooksBlock);
       }
       mkdirSync(dirname(plan.configPath), { recursive: true });
       writeFileSync(plan.configPath, JSON.stringify(merged, null, 2) + "\n");

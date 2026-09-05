@@ -6,7 +6,9 @@ import {
   planZcodeInstall,
   codexSkillSourceFile,
   buildZcodeHooks,
+  buildCodexHooks,
   mergeHooks,
+  mergeStopHooks,
   isDoneChanHook,
 } from "../src/install.js";
 import { resolveTags, testNotification } from "../src/notification/presets.js";
@@ -135,6 +137,33 @@ describe("mergeHooks", () => {
   });
 });
 
+describe("mergeStopHooks", () => {
+  it("merges a Codex-style block directly under hooks: no events wrapper, no enabled flag", () => {
+    const root = {
+      hooks: {
+        Stop: [
+          { hooks: [{ type: "command", command: "foreign" }] },
+          { hooks: [{ _donechan: { version: "0.1.0" }, type: "command", command: "node old hook" }] },
+        ],
+      },
+    };
+    const merged = mergeStopHooks(root, buildCodexHooks("entry.js", "0.2.0"));
+    const hooks = merged.hooks as { enabled?: unknown; Stop: { hooks: Record<string, unknown>[] }[] };
+    expect(hooks.enabled).toBeUndefined();
+    expect(hooks.Stop).toHaveLength(2);
+    expect(hooks.Stop[0]!.hooks[0]!.command).toBe("foreign"); // untouched
+    expect(hooks.Stop[1]!.hooks[0]!._donechan).toMatchObject({ version: "0.2.0" }); // upgraded
+    expect((merged as { hooks: { events?: unknown } }).hooks.events).toBeUndefined();
+  });
+
+  it("drops no hooks and preserves unrelated root keys", () => {
+    const root = { brand: "codex", hooks: { Stop: [{ hooks: [{ type: "command", command: "foreign" }] }] } };
+    const merged = mergeStopHooks(root, buildCodexHooks("entry.js", "0.2.0"));
+    expect((merged as { brand?: string }).brand).toBe("codex");
+    expect((merged.hooks as { Stop: unknown[] }).Stop).toHaveLength(2);
+  });
+});
+
 describe("opencode plugin source", () => {
   it("embeds the entry path safely and handles session.idle", () => {
     const src = opencodePluginSource("/opt/my tools/cli.js", "0.2.0");
@@ -143,11 +172,17 @@ describe("opencode plugin source", () => {
     expect(src).toContain("last_assistant_message");
     expect(src).toContain("source_agent");
   });
-  it("redirects stdin inside the Bun shell template (outside `<` is a JS comparison)", () => {
+  it("spawns the hook via node:child_process and never via Bun's $ shell", () => {
     const src = opencodePluginSource("/opt/cli.js", "0.2.0");
-    expect(src).toContain("hook < ${Buffer.from(payload)}`.quiet()");
-    // The template must close after the redirect, with no dangling `<` outside.
-    expect(src).not.toMatch(/hook` < /);
+    // The desktop app runs its server on Node where plugin input `$` is
+    // undefined — a `$` template would throw on every event, silently.
+    expect(src).toContain('import { spawn } from "node:child_process"');
+    expect(src).toContain("const nodePath = ");
+    expect(src).toContain("child.stdin?.write(payload)");
+    expect(src).toContain('stdio: ["pipe", "ignore", "ignore"]');
+    expect(src).toContain('console.error("donechan: spawn failed:", e)');
+    expect(src).toContain('console.error("donechan: plugin event failed:", e)');
+    expect(src).not.toMatch(/\$`/);
   });
 });
 
@@ -157,6 +192,7 @@ describe("resolveTags", () => {
     expect(resolveTags("zcode", undefined, "后端|bugfix", false)).toBe("ZCode");
     expect(resolveTags("codex-legacy")).toBe("Codex");
     expect(resolveTags("claude")).toBe("ClaudeCode");
+    expect(resolveTags("opencode")).toBe("OpenCode");
   });
   it("appends configured static tags after the agent tag", () => {
     expect(resolveTags("zcode", "dev|urgent", undefined, false)).toBe("ZCode|dev|urgent");

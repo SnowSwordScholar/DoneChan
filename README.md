@@ -2,11 +2,11 @@
 
 # DoneChan
 
-**让 AI 亲手告诉你：陛下，您的任务做完了，接下来有何吩咐**
+**让 AI 亲手告诉你：皇上，您的任务完成了！**
 
-通过 Server酱³ 把任务完成通知推到手机，让你更好地当个黑心老板。
+通过 Server酱³ 把任务完成通知推到手机，让你更好地当个黑心皇上。
 
-支持 / Works with: **ZCode · Codex · Claude Code**
+支持 / Works with: **ZCode · Codex · Claude Code · OpenCode**
 
 [![CI](https://github.com/SnowSwordScholar/DoneChan/actions/workflows/ci.yml/badge.svg)](https://github.com/SnowSwordScholar/DoneChan/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
@@ -20,7 +20,8 @@
 
 ## 何为 DoneChan
 
-使用 Codex 和其他 Agent 时候，总是想要像黑心老板一样让 Agent 不停歇，但是这些软件并没有一个很好的通知方式，要么是只通过系统通知和一声提示，要么需要注册并验证手机号。DoneChan 为身为老板的你添加了一个更方便的通知方式——当任务完成时通过 Server酱³ 推送通知到手机上，哪怕躺在床上或者出去吃饭也能直接知道自己的“员工”完成了任务，可以马上下达下一步的命令让员工无法继续摸鱼。
+身为黑心大老板，对于自己的 Agent 把活做完消极怠工是深恶痛绝的，我们通常会一直监视 Agent 工作。但是总会有时候出去吃饭，上床躺着，这个时候并不能有效的监控 Agent 。
+DoneChan 为身为老板的你添加了一个更方便的通知方式——当任务完成时通过 Server酱³ 推送通知到手机上，哪怕躺在床上或者出去吃饭也能直接知道自己的“员工”完成了任务，可以马上下达下一步的命令让员工无法继续摸鱼。
 
 
 > 社区项目，与 ZCode / OpenAI / Anthropic 官方无关。
@@ -72,13 +73,14 @@ donechan send "hello"        # 手机收到即成功
 接入你的 Stop 钩子，再把 skills/donechan-notify 装成技能。
 ```
 
-**手动** — `donechan install <agent>` 会打印含绝对路径的现成配置：
+**手动** — `donechan install <agent>` 交互式写入（先展示计划、确认后才写，`--print` 只打印）：
 
 | Agent | 做什么 |
 |---|---|
-| ZCode | 把输出合并进 `~/.zcode/cli/config.json`；或直接用 `adapters/zcode/plugin/` 插件（钩子自动启用） |
-| Codex | 把输出写入 `~/.codex/hooks.json`（首次加载需信任确认）；老版本用 `adapters/codex/notify.toml` |
-| Claude Code | 把输出合并进 `~/.claude/settings.json` |
+| ZCode | 合并进 `~/.zcode/cli/config.json`；或直接用 `adapters/zcode/plugin/` 插件（钩子自动启用） |
+| Codex | 写入 `~/.codex/hooks.json`（首次加载需信任确认）；老版本用 `adapters/codex/notify.toml` |
+| Claude Code | 合并进 `~/.claude/settings.json` |
+| OpenCode | 写入 `~/.config/opencode/plugins/donechan.js` 插件（OpenCode 没有 Stop 钩子，走 `session.idle` 事件） |
 
 接入标记协议 — 把
 [`skills/donechan-notify/SKILL.md`](skills/donechan-notify/SKILL.md)
@@ -109,7 +111,8 @@ Codex 专用格式（安装 `skills/donechan-notify-codex` 到
 donechan hook              hook 统一入口（stdin 或 argv JSON），fire-and-forget
 donechan send [标题]       发送测试通知（-b 正文）
 donechan check             校验配置
-donechan install <agent>   打印 zcode|codex|claude 接入配置
+donechan install <agent|all>  交互式接入（zcode | codex | claude | opencode）；--print 只打印
+donechan config            查看/设置配置项（sendkey、title_prefix、tags、marker_tags_enabled）
 donechan login <sendkey>   把 SendKey 写入 ~/.donechan/config.json
 ```
 
@@ -133,6 +136,7 @@ donechan login <sendkey>   把 SendKey 写入 ~/.donechan/config.json
 | ZCode 里不触发 | 配置文件钩子必须 `"enabled": true`（插件形态自动启用） |
 | Codex 提示信任 | 预期行为，确认前读一眼命令 |
 | AI 忘写标记 | 模板兜底仍会推送；把 skill 装上提高命中率 |
+| OpenCode 收不到通知 | OpenCode 1.14.x 上游 bug：插件正常加载但事件（`session.idle` 等）不派发，等待上游修复 |
 
 ## 参与贡献
 

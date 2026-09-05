@@ -1,10 +1,10 @@
 /**
  * Configuration discovery.
  *
- * Precedence:
+ * Precedence (first non-empty wins):
  *   1. Environment variables: DONECHAN_SENDKEY, DONECHAN_TITLE_PREFIX, DONECHAN_TAGS
- *   2. ~/.donechan/config.json (user scope)
- *   3. .donechan/config.json walking up from the event cwd (project scope)
+ *   2. .donechan/config.json walking up from the event cwd (project scope)
+ *   3. ~/.donechan/config.json (user scope)
  */
 
 import { readFileSync, existsSync } from "node:fs";
@@ -64,10 +64,8 @@ export function loadConfig(eventCwd: string): DoneChanConfig | null {
   const projectPath = findProjectConfig(eventCwd);
   const projectFile = projectPath ? readConfigFile(projectPath) : null;
 
-  // Project scope overrides user scope for non-secret fields; the key falls
-  // back through project → user → env so a repo can never silently replace a
-  // user's personal key choice... actually the reverse: env > project > user,
-  // so a user can always override a repo-committed key with their own.
+  // env > project > user: a repo-committed key can always be overridden by the
+  // user's own config or an env var, never the other way around.
   sendKey = sendKey || projectFile?.sendkey || userFile?.sendkey || "";
   titlePrefix = titlePrefix || projectFile?.title_prefix || userFile?.title_prefix || "";
   tags = tags || projectFile?.tags || userFile?.tags || "";

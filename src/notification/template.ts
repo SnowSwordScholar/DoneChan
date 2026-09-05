@@ -21,6 +21,7 @@ const AGENT_LABEL: Record<DoneEvent["agent"], string> = {
   codex: "Codex",
   "codex-legacy": "Codex",
   claude: "Claude Code",
+  opencode: "OpenCode",
 };
 
 /** Fallback notification when the reply carries no donechan marker. */

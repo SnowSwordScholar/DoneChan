@@ -51,6 +51,14 @@ const CLAUDE_STOP = {
   last_assistant_message: "All tests pass.",
 };
 
+const OPENCODE_STOP = {
+  hook_event_name: "Stop",
+  source_agent: "opencode",
+  session_id: "oc-1",
+  cwd: "/home/u/proj",
+  last_assistant_message: "Done.",
+};
+
 describe("detectAgent", () => {
   it("identifies ZCode by its camelCase duplicates", () => {
     expect(detectAgent(ZCODE_STOP)).toBe("zcode");
@@ -63,6 +71,9 @@ describe("detectAgent", () => {
   });
   it("defaults snake_case-only Stop payloads to Claude", () => {
     expect(detectAgent(CLAUDE_STOP)).toBe("claude");
+  });
+  it("identifies OpenCode by its source_agent", () => {
+    expect(detectAgent(OPENCODE_STOP)).toBe("opencode");
   });
   it("rejects junk", () => {
     expect(detectAgent(null)).toBeNull();
@@ -92,6 +103,12 @@ describe("normalize", () => {
     expect(e.agent).toBe("codex-legacy");
     expect(e.userMessages).toEqual(["Refactor foo"]);
     expect(e.lastAssistantMessage).toBe("Refactor complete.");
+  });
+  it("maps OpenCode plugin fields", () => {
+    const e = normalize(OPENCODE_STOP)!;
+    expect(e.agent).toBe("opencode");
+    expect(e.lastAssistantMessage).toBe("Done.");
+    expect(e.sessionId).toBe("oc-1");
   });
   it("handles null last_assistant_message", () => {
     const e = normalize({ ...CODEX_STOP, last_assistant_message: null })!;
