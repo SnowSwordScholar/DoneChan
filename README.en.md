@@ -57,9 +57,15 @@ Three-layer content strategy:
 ## Install
 
 ```bash
+npm install -g donechan
+```
+
+Or from source:
+
+```bash
 git clone https://github.com/SnowSwordScholar/DoneChan.git
 cd DoneChan && npm i && npm run build
-npm link        # put donechan on your PATH (optional)
+npm link        # put donechan on your PATH
 ```
 
 Configure your SendKey (get one at

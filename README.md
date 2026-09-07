@@ -50,9 +50,15 @@ flowchart LR
 ## 安装
 
 ```bash
+npm install -g donechan
+```
+
+或者从源码安装：
+
+```bash
 git clone https://github.com/SnowSwordScholar/DoneChan.git
 cd DoneChan && npm i && npm run build
-npm link        # 把 donechan 挂进全局 PATH（可选）
+npm link        # 把 donechan 挂进全局 PATH
 ```
 
 配置 SendKey（在 [sc3.ft07.com/sendkey](https://sc3.ft07.com/sendkey) 获取）：

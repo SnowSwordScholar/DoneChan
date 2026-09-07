@@ -60,6 +60,21 @@ describe("extractMarker", () => {
     expect(extractMarker('<!--donechan: {"title":"T"}--> 以上是格式说明')).toBeNull();
   });
 
+  it("accepts a marker followed by a short sign-off line", () => {
+    const m = extractMarker('<!--donechan: {"title":"T"}-->\n✅ 收到，恭候吩咐。')!;
+    expect(m.title).toBe("T");
+  });
+
+  it("scans up to three trailing non-empty lines", () => {
+    const m = extractMarker('<!--donechan: {"title":"T"}-->\n收尾一\n收尾二')!;
+    expect(m.title).toBe("T");
+  });
+
+  it("ignores a marker more than three trailing lines above the end", () => {
+    const text = '<!--donechan: {"title":"T"}-->\n一\n二\n三\n四';
+    expect(extractMarker(text)).toBeNull();
+  });
+
   it("uses the last-line marker even when earlier lines quote examples", () => {
     const text = '以前见过 <!--donechan: {"title":"例子"}-->\n真结尾\n<!--donechan: {"title":"真通知"}-->';
     const m = extractMarker(text)!;
@@ -82,10 +97,28 @@ describe("extractMarker", () => {
     expect(extractMarker("普通回复")).toBeNull();
   });
 
-  it("caps oversized fields", () => {
-    const m = extractMarker(`\n<!--donechan: {"title":"${"t".repeat(500)}","desp":"${"d".repeat(99999)}"}-->`)!;
-    expect(m.title.length).toBeLessThanOrEqual(100);
-    expect(m.desp!.length).toBeLessThanOrEqual(4000);
+  it("ignores a prose line that merely ends with an example marker", () => {
+    // "就写 <!--donechan: ...-->" is prose quoting the format, not a marker;
+    // firing it would push example content to the phone.
+    expect(extractMarker('比如你要发通知，就写 <!--donechan: {"title":"错误标题"}-->')).toBeNull();
+  });
+
+  it("ignores a fenced example announced as a demo — the marker line alone still counts", () => {
+    // Semantic choice: the marker only fires when the line IS the marker
+    // (fences don't shield it — a fenced marker line is textually identical
+    // to a real one). Prose-prefixed examples stay inert; that is the guard
+    // that matters. See the "prose line that merely ends" test above.
+    const text = '按照约定，这是标记的样例（本次只是演示，不要发送通知）：\n<!--donechan: {"title":"演示标题","desp":"演示正文"}-->\n以上就是演示。';
+    const m = extractMarker(text)!;
+    expect(m.title).toBe("演示标题");
+  });
+
+  it("caps fields on a code-point boundary", () => {
+    // 99 好 (99 units) + 👍 (2 units) = 101 units; cap at 100 would split the
+    // pair, so the cut backs off to 99 and excludes the emoji entirely.
+    const m = extractMarker(`<!--donechan: {"title":"${"好".repeat(99)}👍"}-->`)!;
+    expect(m.title.length).toBe(99);
+    expect(m.title).not.toMatch(/[\uD800-\uDFFF](?![\uDC00-\uDFFF])/u);
   });
 });
 
@@ -117,5 +150,49 @@ describe("compose", () => {
   it("truncates long titles", () => {
     const n = compose(event({ lastAssistantMessage: "x".repeat(300) }));
     expect(n.title.length).toBeLessThanOrEqual(85);
+  });
+  it("recovers a marker line that stands alone near the end", () => {
+    // A marker on its own line right before a sign-off gets marker content:
+    // the tail window scans the last three non-empty lines. (A fenced example
+    // announced as a demo stays inert — see the ignores tests above.)
+    const reply =
+      '正文说明。\n\n<!--donechan: {"title":"安装测试通过","desp":"正文"}-->\n\n✅ 收到，陛下。恭候您的下一步吩咐。';
+    const n = compose(event({ lastAssistantMessage: reply }));
+    expect(n.source).toBe("marker");
+    expect(n.title).toBe("安装测试通过");
+  });
+  it("template fallback never leaks a marker that misses the tail window", () => {
+    // Live regression: the marker sits more than three non-empty lines above
+    // the end, the extractor declines, and the fallback must not echo the raw
+    // `<!--donechan: {...}` text to the phone.
+    const reply =
+      '<!--donechan: {"title":"安装测试通过","desp":"正文"}-->\n\n下面补充说明第一点。\n然后是第二点。\n最后是第三点。\n全部搞定。';
+    const n = compose(event({ lastAssistantMessage: reply }));
+    expect(n.source).toBe("template");
+    expect(n.title).toBe("✅ 下面补充说明第一点。");
+    expect(n.body).not.toContain("donechan");
+  });
+  it("template fallback strips the Codex hidden-link form too", () => {
+    // A donechan:// link is marker-shaped content; on agents where the hidden
+    // form is not enabled it must not surface raw in the fallback either.
+    const encoded = Buffer.from(JSON.stringify({ title: "H" }), "utf8").toString("base64url");
+    const n = compose(event({ lastAssistantMessage: `正文\n[](donechan://${encoded})` }));
+    expect(n.source).toBe("template");
+    expect(n.title).toBe("✅ 正文");
+    expect(n.body).not.toContain("donechan://");
+  });
+  it("template fallback strips a truncated marker with no closing -->", () => {
+    // responsePreview clipping / transcript tail cuts leave an unterminated
+    // prefix; it must never reach the phone (title or body).
+    const n = compose(
+      event({ lastAssistantMessage: '<!--donechan: {"title":"登录模块重构完成","desp":"全部测试通过，请陛下\n后续的说明文字。' }),
+    );
+    expect(n.source).toBe("template");
+    expect(n.title).toBe("✅ 后续的说明文字。");
+    expect(n.body).not.toContain("donechan");
+  });
+  it("template title never ends in a lone surrogate", () => {
+    const n = compose(event({ lastAssistantMessage: "字".repeat(79) + "👍" + "更多说明文字" }));
+    expect(n.title).not.toMatch(/[\uD800-\uDFFF](?![\uD800-\uDFFF])/u);
   });
 });

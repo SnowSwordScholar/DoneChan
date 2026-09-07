@@ -3,6 +3,37 @@
 All notable changes to DoneChan will be documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.2.1] - 2026-09-06
+
+### Fixed
+
+- Marker hardening, driven by a live incident where a misplaced marker's raw
+  text reached the phone via the template fallback:
+  - `extractMarker` scans the last 3 non-empty lines (still end-anchored),
+    so a short sign-off after the marker no longer disables it; a line must
+    now BE the marker (`^` anchor added), so prose that merely ends with an
+    example never fires.
+  - Template fallback strips marker-shaped text before building the
+    notification — well-formed markers, Codex hidden links, truncated
+    markers with no closing `}-->`, and `"}-->` residue from broken nested
+    JSON. A misplaced marker can no longer leak raw JSON to the phone.
+- `cap`/`truncate` cut on code-point boundaries: field caps and title
+  truncation can no longer split a surrogate pair into a lone surrogate
+  (rendered as U+FFFD on the phone).
+
+### Changed
+
+- `src/cli.ts` `VERSION` constant now tracks package.json (was left at
+  0.1.0 after the 0.2.0 release).
+- SKILL docs (both variants) state the protocol rules explicitly: the
+  marker must be the last line, alone, with no text after it, never inside
+  a code block.
+
+### Added
+
+- 10 new regression tests (69 → 79), including the live-incident shape,
+  the tail-window edges, and code-point boundary caps.
+
 ## [0.2.0] - 2026-09-06
 
 ### Added

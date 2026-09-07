@@ -14,6 +14,7 @@
 import { spawn } from "node:child_process";
 import { readFileSync, writeFileSync, existsSync, mkdirSync, openSync, writeSync, closeSync, fchmodSync, renameSync, unlinkSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { normalize } from "./agent/normalize.js";
 import { compose } from "./notification/compose.js";
 import { testNotification, resolveTags } from "./notification/presets.js";
@@ -24,7 +25,17 @@ import { checkSendKey, planZcodeInstall, planCodexInstall, planClaudeInstall, pl
 import { opencodePluginSource } from "./agent/opencode.js";
 import { codexConfigPath, claudeConfigPath, opencodePluginPath, zcodeConfigPath } from "./install.js";
 
-const VERSION = "0.1.0";
+// Single source of truth for the version: package.json itself, resolved
+// relative to this file (dist/cli.js → ../package.json). Works identically
+// for the repo layout, npm link, and the npm-installed layout, so the
+// constant can never drift from the published version again.
+const VERSION: string = (() => {
+  try {
+    return JSON.parse(readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "package.json"), "utf8")).version as string;
+  } catch {
+    return "unknown";
+  }
+})();
 
 function out(msg: string): void {
   process.stdout.write(`${msg}\n`);

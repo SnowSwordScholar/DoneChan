@@ -1,6 +1,6 @@
 {
   "name": "donechan",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "AI-task-done notifications via ServerChan³ for ZCode, Codex, Claude Code and OpenCode — the notification content is defined by the AI itself.",
   "license": "MIT",
   "author": "雪剑书生 <73566969+SnowSwordScholar@users.noreply.github.com> (https://github.com/SnowSwordScholar)",
