@@ -21,7 +21,7 @@ import { testNotification, resolveTags } from "./notification/presets.js";
 import { isValidSendKey, push } from "./channel/serverchan.js";
 import { loadConfig, userConfigPath } from "./config/load.js";
 import { stageHandoff, runSendWorker, readHandoff, sweepStaleStaging, shellQuoteWin, shellQuotePosix } from "./handoff.js";
-import { checkSendKey, planZcodeInstall, planCodexInstall, planClaudeInstall, planOpencodeInstall, planDshInstall, buildZcodeHooks, buildCodexHooks, buildClaudeHooks, mergeHooks, mergeStopHooks, installDshPlugin, dshHome, dshProfileDir, dshPluginTargetDir, dshProfilePatchPath, dshPluginSourceDir, dshPluginPatchEntry, confirmPlan, skillTargetDir, skillSourceFile, codexSkillSourceFile, installSkill, AGENTS, type AgentName } from "./install.js";
+import { checkSendKey, planZcodeInstall, planCodexInstall, planClaudeInstall, planOpencodeInstall, planDshInstall, buildZcodeHooks, buildCodexHooks, buildClaudeHooks, mergeHooks, mergeStopHooks, installDshPlugin, dshHome, dshProfileDir, dshPluginTargetDir, dshProfilePatchPath, dshPluginSourceDir, dshPluginPatchEntry, confirmPlan, skillTargetDir, skillSourceFile, codexSkillSourceFile, installSkill, uninstallSkill, AGENTS, type AgentName } from "./install.js";
 import { opencodePluginSource } from "./agent/opencode.js";
 import { codexConfigPath, claudeConfigPath, opencodePluginPath, zcodeConfigPath } from "./install.js";
 
@@ -134,7 +134,7 @@ async function cmdHook(argv: string[] = []): Promise<number> {
     return 0;
   }
 
-  const notification = compose(event);
+  const notification = compose(event, config.markerEnabled);
   const title = config.titlePrefix ? `${config.titlePrefix} ${notification.title}` : notification.title;
   const tags = resolveTags(event.agent, config.tags, notification.tags, config.markerTagsEnabled);
   const payload = {
@@ -237,30 +237,30 @@ const CODEX_HOOK = {
 
 /**
  * Interactive install for one agent (or all): preflight the sendkey, detect
- * existing wiring, confirm, then write the agent config and the marker-protocol
- * skill in place. `--print` shows the would-be config instead of writing.
+ * existing wiring, confirm, then write the agent config. The marker-protocol
+ * skill is installed only when `wantSkill` (`--skill`) is set; `--print` shows
+ * the would-be config instead of writing.
  */
-async function cmdInstallInteractive(targets: string[], printOnly: boolean): Promise<number> {
+async function cmdInstallInteractive(targets: string[], printOnly: boolean, wantSkill: boolean): Promise<number> {
   const agents: AgentName[] = targets.includes("all")
     ? AGENTS
     : targets.filter((t): t is AgentName => (AGENTS as string[]).includes(t));
   if (agents.length === 0) {
-    err(`usage: donechan install <${AGENTS.join("|")}|all> [--print]`);
+    err(`usage: donechan install <${AGENTS.join("|")}|all> [--print] [--skill]`);
     return 1;
   }
   if (!printOnly && !checkSendKey()) return 1;
 
   let failures = 0;
-  const batch = agents.length > 1;
   for (const agent of agents) {
     if (agents.length > 1) out("");
-    const result = await installAgent(agent, printOnly, batch);
+    const result = await installAgent(agent, printOnly, wantSkill);
     if (result !== 0) failures += 1;
   }
   return failures > 0 ? 1 : 0;
 }
 
-async function installAgent(agent: AgentName, printOnly: boolean, batch: boolean): Promise<number> {
+async function installAgent(agent: AgentName, printOnly: boolean, wantSkill: boolean): Promise<number> {
   const entry = entryPath();
   const version = VERSION;
   const skillSource = agent === "codex" ? codexSkillSourceFile(entry) : skillSourceFile(entry);
@@ -336,7 +336,7 @@ async function installAgent(agent: AgentName, printOnly: boolean, batch: boolean
     return 1;
   }
 
-  const answer = await confirmPlan(plan, out, batch);
+  const answer = await confirmPlan(plan, out, wantSkill);
   if (!answer.proceed) {
     out("已取消，未做任何修改 / cancelled, nothing written");
     return 0;
@@ -380,15 +380,17 @@ async function installAgent(agent: AgentName, printOnly: boolean, batch: boolean
       out("   Go to Codex Settings → Hooks → User config and click Trust on the DoneChan hook.");
     }
 
-    // 2. Skill — only when the user opted in (declining still leaves the hook
-    //    working via the template fallback; the AI just won't auto-write markers).
+    // 2. Skill — opt-in only (`--skill`). Without it the push carries the reply
+    //    itself, which is the default and costs the model nothing.
     if (!answer.installSkill) {
-      out("ℹ 已跳过 skill 安装（AI 将只发模板兜底通知，不自动写标记）/ skill skipped; template fallback only");
+      out("ℹ 未安装标记 skill：通知内容直接用 AI 的回复（默认行为）/ no marker skill: pushes carry the reply itself (default)");
       return 0;
     }
     const skillResult = installSkill(agent, version, entry, skillSource);
     if (skillResult === "copied") {
       out(`✅ skill 已安装 / skill installed → ${agent === "opencode" ? plan.skillDir + "/AGENTS.md" : skillTargetDir(agent) + "/SKILL.md"}`);
+      out("➡ 别忘了开启标记读取：donechan config marker_enabled true");
+      out("   / now switch the reading side on: donechan config marker_enabled true");
     } else if (skillResult === "already") {
       out("ℹ skill 已存在，跳过 / skill already installed");
     } else {
@@ -500,6 +502,10 @@ const CONFIG_KEYS: Record<string, ConfigKeyMeta> = {
     desc: "是否放行 AI 在 marker 里写的标签（默认 false，防止标签无限增长）",
     validate: (v) => (["true", "false"].includes(v.toLowerCase()) ? true : "must be true or false"),
   },
+  marker_enabled: {
+    desc: "是否读取 AI 写的通知标记（默认 false；开启后 AI 每轮要多写一段 JSON，费 Token）",
+    validate: (v) => (["true", "false"].includes(v.toLowerCase()) ? true : "must be true or false"),
+  },
 };
 
 /** `donechan config` — read/write ~/.donechan/config.json fields. */
@@ -554,7 +560,7 @@ function cmdConfig(args: string[]): number {
       return 1;
     }
   }
-  const normalized = meta.validate && key === "marker_tags_enabled" ? value.toLowerCase() : value;
+  const normalized = meta.validate && (key === "marker_tags_enabled" || key === "marker_enabled") ? value.toLowerCase() : value;
   if (normalized === "") delete root[key];
   else root[key] = normalized;
   mkdirSync(dirname(path), { recursive: true });
@@ -583,6 +589,32 @@ function readConfigKey(key: string): string | undefined {
   return undefined;
 }
 
+/**
+ * `donechan uninstall <agent|all>` — remove the marker-protocol skill an older
+ * install left behind. Hook and plugin wiring is deliberately untouched: the
+ * default is now "no markers", so the skill is the part that must go, and
+ * removing wiring is per-agent surgery this command does not claim to do.
+ */
+function cmdUninstall(targets: string[]): number {
+  const agents: AgentName[] = targets.includes("all")
+    ? AGENTS
+    : targets.filter((t): t is AgentName => (AGENTS as string[]).includes(t));
+  if (agents.length === 0) {
+    err(`usage: donechan uninstall <${AGENTS.join("|")}|all>`);
+    return 1;
+  }
+  for (const agent of agents) {
+    out(
+      uninstallSkill(agent)
+        ? `✅ 已移除标记 skill / marker skill removed → ${agent}`
+        : `ℹ 未发现标记 skill / no marker skill found → ${agent}`,
+    );
+  }
+  out("ℹ 钩子/插件配置未改动 / hook and plugin wiring left untouched");
+  out("ℹ 标记读取默认就是关的 / marker reading is off by default: donechan config marker_enabled");
+  return 0;
+}
+
 function usage(): number {
   out(`DoneChan v${VERSION} — AI 任务完成通知（Server酱³）
 
@@ -590,9 +622,12 @@ function usage(): number {
   donechan hook [json]     hook 统一入口（stdin 或 argv JSON），非阻塞
   donechan send [标题]     发送测试通知（-b 正文）
   donechan check           校验配置
-  donechan install <agent|all> [--print]
+  donechan install <agent|all> [--print] [--skill]
                            交互式接入 agent（zcode | codex | claude | opencode | dsh | all），
-                           自动写入钩子配置和 donechan-notify skill；--print 仅打印
+                           写入钩子/插件配置；--print 仅打印
+                           --skill 额外安装标记协议 skill（默认不装：费 Token 且非必需）
+  donechan uninstall <agent|all>
+                           移除标记协议 skill（不动钩子配置）
   donechan config          查看全部配置
   donechan config <key> [<value>]
                            读取/设置配置项（写入值为空字符串即清除）：
@@ -600,6 +635,7 @@ function usage(): number {
                              title_prefix          标题前缀，留空清除
                              tags                  静态标签（竖线分隔），追加在 ZCode 等 agent 标签后
                              marker_tags_enabled   是否放行 AI 生成的标签（true/false，默认 false）
+                             marker_enabled        是否读取 AI 写的通知标记（true/false，默认 false）
   donechan login <sendkey> 等价于 config sendkey <sendkey>
   donechan --version       版本号
 
@@ -629,10 +665,13 @@ async function main(): Promise<number> {
     case "check":
       return cmdCheck();
     case "install": {
-      const agents = rest.filter((a) => a !== "--print");
+      const agents = rest.filter((a) => a !== "--print" && a !== "--skill");
       const printOnly = rest.includes("--print");
-      return await cmdInstallInteractive(agents, printOnly);
+      const wantSkill = rest.includes("--skill");
+      return await cmdInstallInteractive(agents, printOnly, wantSkill);
     }
+    case "uninstall":
+      return cmdUninstall(rest);
     case "login":
       return rest[0] ? cmdLogin(rest[0]) : (err("usage: donechan login <sendkey>"), 1);
     case "config":

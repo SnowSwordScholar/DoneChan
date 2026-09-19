@@ -134,15 +134,24 @@ describe("extractMarker", () => {
 });
 
 describe("compose", () => {
-  it("prefers marker content", () => {
+  it("prefers marker content when the protocol is switched on", () => {
     const n = compose(
       event({
         lastAssistantMessage: '回复\n<!--donechan: {"title":"AI 定义的标题","desp":"AI 定义的内容"}-->',
       }),
+      true,
     );
     expect(n.source).toBe("marker");
     expect(n.title).toBe("AI 定义的标题");
     expect(n.body).toBe("AI 定义的内容");
+  });
+  it("ignores a marker by default — the reply itself is the push", () => {
+    const reply = '已修复 DSH 钩子推送\n\n细节说明。\n<!--donechan: {"title":"AI 定义的标题","desp":"AI 定义的内容"}-->';
+    const n = compose(event({ lastAssistantMessage: reply }));
+    expect(n.source).toBe("template");
+    expect(n.title).toBe("✅ 已修复 DSH 钩子推送");
+    // The marker never reaches the phone, read or not.
+    expect(n.body).not.toContain("donechan");
   });
   it("falls back to template without marker", () => {
     const n = compose(event({ lastAssistantMessage: "## 重构完成\n所有测试通过" }));
@@ -168,7 +177,7 @@ describe("compose", () => {
     // announced as a demo stays inert — see the ignores tests above.)
     const reply =
       '正文说明。\n\n<!--donechan: {"title":"安装测试通过","desp":"正文"}-->\n\n✅ 收到，陛下。恭候您的下一步吩咐。';
-    const n = compose(event({ lastAssistantMessage: reply }));
+    const n = compose(event({ lastAssistantMessage: reply }), true);
     expect(n.source).toBe("marker");
     expect(n.title).toBe("安装测试通过");
   });

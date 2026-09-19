@@ -23,6 +23,18 @@ export interface DoneChanConfig {
    * unboundedly in the app's tag list.
    */
   markerTagsEnabled: boolean;
+  /**
+   * Whether DoneChan reads the model-written marker (`<!--donechan:{...}-->`)
+   * out of the reply.
+   *
+   * Off by default. The marker costs the model output tokens on every
+   * completion, the template fallback already pushes the reply itself, and
+   * ServerChan renders that Markdown natively — so the marker mostly restates
+   * the reply in a second, hand-built format. It stays available for callers
+   * who want a curated title/summary, and reading it is what must be switched
+   * on: switching the skill on without this would just burn tokens.
+   */
+  markerEnabled: boolean;
 }
 
 interface ConfigFile {
@@ -30,6 +42,7 @@ interface ConfigFile {
   title_prefix?: string;
   tags?: string;
   marker_tags_enabled?: boolean;
+  marker_enabled?: boolean;
 }
 
 function readConfigFile(path: string): ConfigFile | null {
@@ -71,6 +84,7 @@ export function loadConfig(eventCwd: string): DoneChanConfig | null {
   tags = tags || projectFile?.tags || userFile?.tags || "";
   const markerTagsEnabled =
     projectFile?.marker_tags_enabled ?? userFile?.marker_tags_enabled ?? false;
+  const markerEnabled = projectFile?.marker_enabled ?? userFile?.marker_enabled ?? false;
 
   if (!sendKey || !isValidSendKey(sendKey)) return null;
   return {
@@ -78,6 +92,7 @@ export function loadConfig(eventCwd: string): DoneChanConfig | null {
     titlePrefix: titlePrefix || undefined,
     tags: tags || undefined,
     markerTagsEnabled,
+    markerEnabled,
   };
 }
 

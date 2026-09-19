@@ -3,6 +3,38 @@
 All notable changes to DoneChan will be documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Added
+
+- **DSH (DeepSeek Harness) support** via a native plugin
+  (`adapters/dsh/plugin/`), installed by `donechan install dsh` into
+  `$DSH_HOME/profiles/<profile>/node_modules/donechan-dsh` and mounted from the
+  profile's `cordis.patch.yml`. The plugin reads the live session through the
+  harness API, so DSH completion pushes carry the assistant's own reply. It also
+  pushes the question verbatim when the agent parks on the user
+  (`ask_user_question`, `exit_plan_mode`).
+  - `donechan hook --wait` / an `--agent dsh` label keep the send worker alive
+    until its push finishes: DSH reaps a hook's process tree on exit, which
+    silently killed the detached worker partway through its push.
+  - Installing retires the superseded `dsh-hooks-claude-code` bridge wiring
+    (patch entry and its `hooks.json`) so one event cannot push twice.
+- `donechan uninstall <agent|all>` removes the marker-protocol skill an older
+  install left behind (hook and plugin wiring is untouched).
+- `marker_enabled` config key (default `false`).
+
+### Changed
+
+- **The marker protocol is now opt-in.** Notifications carry the assistant's own
+  reply by default (title = first line, body = the reply, which ServerChan
+  renders as Markdown), so the model writes nothing extra and spends no tokens.
+  Enable it with `donechan install <agent> --skill` **and**
+  `donechan config marker_enabled true`.
+- `donechan install` no longer installs the marker skill unless `--skill` is
+  passed, and warns when an older install left one behind.
+- Template fallback still strips marker-shaped text unconditionally, so a stray
+  marker never reaches the phone whether or not the protocol is on.
+
 ## [0.2.1] - 2026-09-06
 
 ### Fixed

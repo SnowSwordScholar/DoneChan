@@ -772,16 +772,15 @@ export class ConfirmReader {
 const confirmReader = new ConfirmReader();
 
 /**
- * Ask the user for confirmation for one agent install. Always asks to apply
- * the hook config. When `batch` is false and the skill is not yet installed,
- * also offers a separate choice on whether to inject the marker-protocol
- * skill — surfaced especially for Claude Code, whose renderer shows the
- * marker verbatim (it cannot be hidden there).
+ * Ask the user for confirmation for one agent install. Always asks to apply the
+ * hook config; the marker-protocol skill is never installed unless the caller
+ * asked for it with `--skill` (`wantSkill`), because the marker costs the model
+ * tokens and the reply itself already carries the notification content.
  */
 export async function confirmPlan(
   plan: InstallPlan,
   print: (msg: string) => void = console.log,
-  batch = false,
+  wantSkill = false,
 ): Promise<InstallAnswer> {
   print(`目标文件 / target: ${plan.configPath}`);
   print(`  ${plan.fileExists ? "已存在，将合并 / exists, will merge" : "不存在，将创建 / missing, will create"}`);
@@ -802,7 +801,8 @@ export async function confirmPlan(
     print("  ⚠ 检测到其他 Stop 钩子，将保留不动 / existing foreign Stop hooks will be preserved");
   }
   if (plan.agent === "claude") {
-    print("  ℹ Claude Code 会显示标记原文，无法隐藏 / the marker will be visible in Claude Code replies");
+    print("  ℹ 标记协议默认关闭；如要开启请加 --skill（Claude Code 会显示标记原文，无法隐藏）");
+    print("    / the marker protocol is off by default; pass --skill to enable it (Claude Code shows it verbatim)");
   }
   if (plan.agent === "dsh") {
     const profileDir = dshProfileDir();
@@ -819,17 +819,16 @@ export async function confirmPlan(
   // DSH has no marker protocol, so there is nothing for the skill to teach.
   if (plan.agent === "dsh") return { proceed: true, installSkill: false };
 
-  // Skill injection is only prompted for a non-batch install when the skill
-  // is not yet present. Batch (`install all`) installs the skill implicitly.
-  let installSkill = true;
-  if (!batch && !plan.skillInstalled) {
-    const skillAnswer = await confirmReader.ask(
-      "安装 donechan-notify skill，让 AI 自动写通知标记？[Y/n] / install the marker-protocol skill? [Y/n] ",
-      print,
-    );
-    installSkill = !(skillAnswer.toLowerCase() === "n" || skillAnswer.toLowerCase() === "no");
+  if (wantSkill) return { proceed: true, installSkill: true };
+
+  // An older install may have left the skill behind; the default is now off, so
+  // say how to get rid of it rather than letting the model keep writing markers
+  // that nothing reads.
+  if (plan.skillInstalled) {
+    print(`  ℹ 检测到旧版安装的标记 skill（现在默认关闭，AI 会白写标记）`);
+    print(`    / a marker skill from an older install is present; remove it with: donechan uninstall ${plan.agent}`);
   }
-  return { proceed: true, installSkill };
+  return { proceed: true, installSkill: false };
 }
 
 /** Preflight shared by every agent install: the sendkey must be configured. */
