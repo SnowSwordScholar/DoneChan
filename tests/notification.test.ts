@@ -3,6 +3,17 @@ import { extractMarker } from "../src/notification/marker.js";
 import { compose } from "../src/notification/compose.js";
 import type { DoneEvent } from "../src/agent/types.js";
 
+function waiting(overrides: Partial<NonNullable<DoneEvent["waiting"]>> = {}): DoneEvent {
+  return {
+    agent: "dsh",
+    cwd: "C:\\Code\\Team\\DoneChan",
+    lastAssistantMessage: null,
+    userMessages: [],
+    kind: "waiting",
+    waiting: { tool: "ask_user_question", questions: [], options: [], ...overrides },
+  };
+}
+
 function event(overrides: Partial<DoneEvent> = {}): DoneEvent {
   return {
     agent: "zcode",
@@ -196,3 +207,43 @@ describe("compose", () => {
     expect(n.title).not.toMatch(/[\uD800-\uDFFF](?![\uD800-\uDFFF])/u);
   });
 });
+
+describe("compose — waiting notifications", () => {
+  it("quotes the agent's question verbatim and lists the options", () => {
+    const n = compose(waiting({ questions: ["要不要顺手把 README 也改了？"], options: ["改（推荐）", "不改"] }));
+    expect(n.source).toBe("template");
+    expect(n.title).toBe("❓ 要不要顺手把 README 也改了？");
+    expect(n.body).toContain("- 改（推荐）");
+    expect(n.body).toContain("- 不改");
+    expect(n.body).toContain("📁");
+    expect(n.short).toBe("要不要顺手把 README 也改了？");
+  });
+
+  it("puts the plan heading in the title when a plan awaits approval", () => {
+    const n = compose(
+      waiting({ tool: "exit_plan_mode", questions: ["适配 DSH"], plan: "# 适配 DSH\n\n## 步骤\n- 生成 hooks.json" }),
+    );
+    expect(n.title).toBe("❓ 适配 DSH");
+    expect(n.body).toContain("生成 hooks.json");
+  });
+
+  it("never lets marker-shaped text leak out of a question", () => {
+    const n = compose(waiting({ questions: ['就写 <!--donechan: {"title":"x"}-->'], options: [] }));
+    expect(n.title).not.toContain("donechan:");
+    expect(n.body).not.toContain("donechan:");
+  });
+
+  it("falls back to a plain label when no question text survived", () => {
+    const n = compose(waiting({ questions: ["   "], options: [] }));
+    expect(n.title).toContain("DSH");
+    // No content section, so the meta line stands alone — never a leading
+    // separator after an empty body.
+    expect(n.body).toBe("📁 Team/DoneChan");
+  });
+
+  it("lists questions after the first one instead of dropping them", () => {
+    const n = compose(waiting({ questions: ["第一个问题？", "第二个问题？"], options: [] }));
+    expect(n.title).toBe("❓ 第一个问题？");
+    expect(n.body).toContain("第二个问题？");
+  });
+});

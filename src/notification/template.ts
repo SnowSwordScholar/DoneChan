@@ -62,6 +62,7 @@ const AGENT_LABEL: Record<DoneEvent["agent"], string> = {
   "codex-legacy": "Codex",
   claude: "Claude Code",
   opencode: "OpenCode",
+  dsh: "DSH",
 };
 
 /** Fallback notification when the reply carries no donechan marker. */
@@ -93,6 +94,56 @@ export function buildTemplate(event: DoneEvent): Notification {
     title,
     body: body || title,
     short: summary ? truncate(summary, 60) : `${label} 任务完成`,
+    source: "template",
+  };
+}
+
+/**
+ * Notification for a run parked on the human: the agent asked a question or
+ * submitted a plan and will not move until it is answered.
+ *
+ * The content is the agent's own words taken from the blocking tool call, so
+ * nothing here depends on model-written markers — the agent spends no extra
+ * tokens describing what it is waiting for.
+ */
+export function buildWaiting(event: DoneEvent): Notification {
+  const waiting = event.waiting;
+  const label = AGENT_LABEL[event.agent];
+  const questions = (waiting?.questions ?? []).map((q) => stripMarker(q)).filter((q) => q.length > 0);
+  const options = (waiting?.options ?? []).map((o) => stripMarker(o)).filter((o) => o.length > 0);
+  const headline = questions[0] ?? "";
+  const title = headline ? `❓ ${truncate(headline, 80)}` : `❓ ${label} 正在等你回答`;
+
+  const parts: string[] = [];
+  if (questions.length > 1) {
+    // The first question is already the title; list the rest.
+    parts.push(questions.slice(1).map((q) => `- ${truncate(q, 300)}`).join("\n"));
+  }
+  if (options.length > 0) {
+    parts.push(`**选项**：\n${options.map((o) => `- ${truncate(o, 120)}`).join("\n")}`);
+  }
+  if (waiting?.plan) {
+    parts.push(`**计划**：\n${truncate(stripMarker(waiting.plan), 2000)}`);
+  }
+
+  const meta: string[] = [];
+  const shortCwd = shortPath(event.cwd);
+  if (shortCwd) meta.push(`📁 ${shortCwd}`);
+
+  // A waiting tool whose arguments carried nothing usable still means the agent
+  // is parked on the human, so the notification is kept — it just has no content
+  // section, and then the meta line stands alone rather than trailing a
+  // separator after an empty body.
+  const body =
+    parts.length > 0
+      ? meta.length > 0
+        ? `${parts.join("\n\n")}\n\n---\n${meta.join(" · ")}`
+        : parts.join("\n\n")
+      : meta.join(" · ");
+  return {
+    title,
+    body: body || title,
+    short: headline ? truncate(headline, 60) : `${label} 等你回答`,
     source: "template",
   };
 }

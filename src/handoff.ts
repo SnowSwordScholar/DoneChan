@@ -90,18 +90,49 @@ export async function sweepStaleStaging(maxAgeMs = 24 * 60 * 60 * 1000): Promise
 }
 
 /**
- * Spawn a detached worker (`node <entry> __send --payload-file <file>`) that
- * survives the parent's exit. Resolves immediately; the worker's exit is not
- * awaited by design.
+ * Upper bound on how long a waiting caller keeps its own process alive for the
+ * worker's HTTP push. Sits under the hook timeout the installer writes (15s), so
+ * a wedged worker is released by the caller before the agent kills the hook.
  */
-export function spawnDetached(entryPath: string, payloadFile: string, cwd: string): void {
+export const WORKER_WAIT_CAP_MS = 10_000;
+
+/**
+ * Spawn the send worker (`node <entry> __send --payload-file <file>`).
+ *
+ * `wait: false` detaches and unrefs: the caller returns immediately and the
+ * worker outlives it. That is correct where the parent's process tree is left
+ * alone on exit — ZCode, Codex and Claude Code all leave it alone.
+ *
+ * `wait: true` keeps the caller alive until the worker exits, which is required
+ * where the parent runs inside a process tree that is torn down the moment the
+ * parent exits. DSH's hook runner does exactly that: the "detached" worker is
+ * reaped with the tree partway through its push, so the notification is staged
+ * and read but never sent. The wait is capped by {@link WORKER_WAIT_CAP_MS}.
+ */
+export async function runSendWorker(
+  entryPath: string,
+  payloadFile: string,
+  cwd: string,
+  wait: boolean,
+): Promise<void> {
   const child = spawn(process.execPath, [entryPath, "__send", "--payload-file", payloadFile], {
-    detached: true,
+    detached: !wait,
     stdio: "ignore",
     cwd,
     windowsHide: true,
   });
-  child.unref();
+  if (!wait) {
+    child.unref();
+    return;
+  }
+  await new Promise<void>((resolve) => {
+    const done = (): void => resolve();
+    // Both handlers also absorb a spawn failure, which would otherwise surface
+    // as an uncaught 'error' event and kill the hook entry.
+    child.once("exit", done);
+    child.once("error", done);
+    setTimeout(done, WORKER_WAIT_CAP_MS).unref();
+  });
 }
 
 /** Windows cmd.exe quoting (double quotes, doubled inner quotes). */

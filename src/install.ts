@@ -5,7 +5,7 @@
  * protocol.
  */
 
-import { readFileSync, existsSync, mkdirSync, copyFileSync, writeFileSync, rmSync } from "node:fs";
+import { readFileSync, existsSync, mkdirSync, copyFileSync, writeFileSync, rmSync, readdirSync, statSync } from "node:fs";
 import { createInterface } from "node:readline/promises";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
@@ -13,8 +13,8 @@ import { loadConfig } from "./config/load.js";
 import { opencodePluginSource } from "./agent/opencode.js";
 import { shellQuoteWin, shellQuotePosix } from "./handoff.js";
 
-export type AgentName = "zcode" | "codex" | "claude" | "opencode";
-export const AGENTS: AgentName[] = ["zcode", "codex", "claude", "opencode"];
+export type AgentName = "zcode" | "codex" | "claude" | "opencode" | "dsh";
+export const AGENTS: AgentName[] = ["zcode", "codex", "claude", "opencode", "dsh"];
 
 /** The hook block DoneChan manages, versioned so future upgrades can migrate. */
 export interface DoneChanHookBlock {
@@ -63,6 +63,77 @@ export function opencodePluginPath(): string {
   return join(opencodePluginDir(), "donechan.js");
 }
 
+/**
+ * The home-level patch applies to EVERY profile, so one entry covers all of
+ * them (the profile-level file explicitly warns against duplicating inserts
+ * across layers).
+ */
+export function dshPatchPath(): string {
+  return join(homedir(), ".dsh", "cordis.patch.yml");
+}
+
+/** Stable id for the Cordis patch entry DoneChan owns. */
+export const DSH_PATCH_ID = "donechan-hooks";
+
+/**
+ * The id and package name of DoneChan's native DSH plugin.
+ *
+ * The plugin replaced the `dsh-hooks-claude-code` bridge wiring above: the
+ * bridge's Stop payload carries no assistant reply, so every completion push
+ * degraded to the "no reply content" template. The plugin reads the live
+ * session through the harness API instead, at no cost to the model.
+ */
+export const DSH_PLUGIN_ID = "donechan";
+export const DSH_PLUGIN_NAME = "donechan-dsh";
+
+/** The DSH home directory (`$DSH_HOME`, or `~/.dsh`). */
+export function dshHome(): string {
+  const fromEnv = process.env.DSH_HOME;
+  return typeof fromEnv === "string" && fromEnv.length > 0 ? fromEnv : join(homedir(), ".dsh");
+}
+
+/**
+ * The profile DoneChan installs its plugin into. Plugins are resolved from a
+ * profile's own `node_modules`, so a plugin belongs to exactly one profile;
+ * `web` is the GUI profile and the natural default, falling back to whatever
+ * profile exists when it does not.
+ */
+export function dshProfileDir(home = dshHome()): string | null {
+  const profiles = join(home, "profiles");
+  const web = join(profiles, "web");
+  if (existsSync(web)) return web;
+  if (!existsSync(profiles)) return null;
+  try {
+    const first = readdirSync(profiles).map((n) => join(profiles, n)).find((p) => statSync(p).isDirectory());
+    return first ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/** Where the plugin package lives inside a profile. */
+export function dshPluginTargetDir(profileDir: string): string {
+  return join(profileDir, "node_modules", DSH_PLUGIN_NAME);
+}
+
+/** The profile-level Cordis patch that mounts the plugin. */
+export function dshProfilePatchPath(profileDir: string): string {
+  return join(profileDir, "cordis.patch.yml");
+}
+
+/** Locate the bundled plugin source (works from a repo checkout and from npm). */
+export function dshPluginSourceDir(entryPath: string): string | null {
+  const pkgRoot = resolve(entryPath, "..", "..");
+  const candidates = [
+    join(pkgRoot, "adapters", "dsh", "plugin"),
+    join(pkgRoot, "..", "adapters", "dsh", "plugin"),
+  ];
+  for (const c of candidates) {
+    if (existsSync(join(c, "index.js"))) return c;
+  }
+  return null;
+}
+
 export function skillTargetDir(agent: AgentName): string {
   switch (agent) {
     case "zcode":
@@ -75,6 +146,10 @@ export function skillTargetDir(agent: AgentName): string {
       // OpenCode uses AGENTS.md-style instructions, not a skills dir; the
       // skill content is appended to the global AGENTS.md instead.
       return join(homedir(), ".config", "opencode");
+    case "dsh":
+      // DSH never carries the assistant reply in its hook payload, so there is
+      // no marker to write and no skill to install.
+      return join(homedir(), ".dsh");
   }
 }
 
@@ -264,6 +339,37 @@ export function planOpencodeInstall(pluginPath = opencodePluginPath()): InstallP
   };
 }
 
+/**
+ * Inspect the DSH profile DoneChan installs its plugin into. The plugin is a
+ * self-contained package, so there is no JSON merge and nothing to conflict
+ * with; the mount entry lives in the profile's Cordis patch.
+ */
+export function planDshInstall(profileDir: string | null = dshProfileDir()): InstallPlan {
+  const skillDir = skillTargetDir("dsh");
+  if (!profileDir) {
+    return {
+      agent: "dsh",
+      configPath: join(dshHome(), "profiles"),
+      existing: "unknown",
+      fileExists: false,
+      conflictingStopHook: false,
+      skillDir,
+      skillInstalled: true,
+    };
+  }
+  const configPath = dshPluginTargetDir(profileDir);
+  const installed = existsSync(join(configPath, "index.js"));
+  return {
+    agent: "dsh",
+    configPath,
+    existing: installed ? "marked" : "none",
+    fileExists: installed,
+    conflictingStopHook: false,
+    skillDir,
+    skillInstalled: true,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Builders
 // ---------------------------------------------------------------------------
@@ -392,6 +498,147 @@ export function mergeStopHooks(root: Record<string, unknown>, stopBlock: Record<
       Stop: [...foreignGroups, ...incomingStop],
     },
   };
+}
+
+// ---------------------------------------------------------------------------
+// DSH plugin mount (Cordis patch)
+// ---------------------------------------------------------------------------
+
+/** Whether a patch file already carries an entry with this id. */
+export function patchHasId(patchPath: string, id: string): boolean {
+  try {
+    return existsSync(patchPath) && readFileSync(patchPath, "utf8").includes(`id: ${id}`);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Append one `insert` entry unless its id is already present. Cordis appends
+ * inserts without deduplicating, so re-running the installer must not mount the
+ * same plugin twice.
+ * @returns whether the file was written.
+ */
+export function applyPatchEntry(patchPath: string, id: string, entry: string): boolean {
+  if (patchHasId(patchPath, id)) return false;
+  const current = existsSync(patchPath) ? readFileSync(patchPath, "utf8") : "";
+  const trimmed = current.trim();
+  const next = trimmed === "" || trimmed === "[]"
+    ? `${entry}\n`
+    : `${trimmed.replace(/\s*$/u, "")}\n\n${entry}\n`;
+  mkdirSync(resolve(patchPath, ".."), { recursive: true });
+  writeFileSync(patchPath, next, "utf8");
+  return true;
+}
+
+/**
+ * Remove one DoneChan-owned block (the `- insert:` carrying this id, or a bare
+ * `- id: <id>` entry) from a patch file, leaving every other block untouched.
+ * @returns whether a block was removed.
+ */
+export function removePatchBlock(patchPath: string, id: string): boolean {
+  if (!existsSync(patchPath)) return false;
+  let lines: string[];
+  try {
+    lines = readFileSync(patchPath, "utf8").split("\n");
+  } catch {
+    return false;
+  }
+  const idLine = lines.findIndex((line) => line.trim() === `- id: ${id}`);
+  if (idLine < 0) return false;
+  // Walk back to the line that starts this block (`- insert:` or the id entry
+  // itself), then forward through every more-indented line it owns.
+  let start = idLine;
+  while (start > 0 && !/^-\s/u.test(lines[start]!)) start -= 1;
+  let end = idLine;
+  while (end + 1 < lines.length && /^\s+\S/u.test(lines[end + 1]!)) end += 1;
+  let cut = end + 1;
+  while (cut < lines.length && lines[cut]!.trim() === "") cut += 1;
+  lines.splice(start, cut - start);
+  writeFileSync(patchPath, lines.join("\n"), "utf8");
+  return true;
+}
+
+/** The patch entry that mounts DoneChan's native DSH plugin. */
+export function dshPluginPatchEntry(cliPath: string): string {
+  return [
+    "- insert:",
+    `    - id: ${DSH_PLUGIN_ID}`,
+    `      name: ${DSH_PLUGIN_NAME}`,
+    "      config:",
+    `        cliPath: '${cliPath}'`,
+  ].join("\n");
+}
+
+export interface DshPluginInstall {
+  pluginDir: string;
+  patchPath: string;
+  /** Whether the plugin files were written on this run. */
+  wrotePlugin: boolean;
+  /** Whether the profile patch gained the mount entry. */
+  mounted: boolean;
+  /** Whether the superseded hooks-bridge mount was retired. */
+  retiredBridge: boolean;
+}
+
+/**
+ * Install the native plugin into the DSH profile and make sure the superseded
+ * hooks-bridge wiring cannot double-push. Throws when the source, the profile,
+ * or the write fails; the caller reports it.
+ */
+export function installDshPlugin(entryPath: string): DshPluginInstall {
+  const source = dshPluginSourceDir(entryPath);
+  if (!source) throw new Error("bundled DSH plugin source not found (adapters/dsh/plugin)");
+  const profileDir = dshProfileDir();
+  if (!profileDir) throw new Error(`no DSH profile found under ${join(dshHome(), "profiles")}`);
+
+  const pluginDir = dshPluginTargetDir(profileDir);
+  mkdirSync(pluginDir, { recursive: true });
+  let wrotePlugin = false;
+  for (const file of ["index.js", "package.json"]) {
+    const from = join(source, file);
+    const to = join(pluginDir, file);
+    const before = existsSync(to) ? readFileSync(to, "utf8") : null;
+    copyFileSync(from, to);
+    if (before === null || before !== readFileSync(to, "utf8")) wrotePlugin = true;
+  }
+
+  const patchPath = dshProfilePatchPath(profileDir);
+  const mounted = applyPatchEntry(patchPath, DSH_PLUGIN_ID, dshPluginPatchEntry(entryPath));
+
+  // The bridge wiring lives in the HOME patch (and its hooks.json); leaving it
+  // mounted would push every notification twice once the plugin is active.
+  const unmounted = removePatchBlock(dshPatchPath(), DSH_PATCH_ID);
+  const removedHooksFile = removeBridgeHooksFile();
+  return { pluginDir, patchPath, wrotePlugin, mounted, retiredBridge: unmounted || removedHooksFile };
+}
+
+/**
+ * Delete the superseded bridge's `hooks.json` once DoneChan owns every hook in
+ * it, so an upgraded install leaves nothing stale behind. A file that also
+ * holds foreign hooks is left untouched — it is inert either way, because the
+ * bridge itself is no longer mounted.
+ */
+function removeBridgeHooksFile(): boolean {
+  const file = join(dshHome(), "hooks.json");
+  if (!existsSync(file)) return false;
+  try {
+    const root = JSON.parse(readFileSync(file, "utf8")) as { hooks?: Record<string, unknown> };
+    const groups = Object.values(root?.hooks ?? {}).flatMap((value) => (Array.isArray(value) ? value : []));
+    const foreign = groups.some(
+      (group) =>
+        typeof group !== "object" ||
+        group === null ||
+        !Array.isArray((group as { hooks?: unknown[] }).hooks) ||
+        ((group as { hooks?: unknown[] }).hooks ?? []).some((hook) => !isDoneChanHook(hook)),
+    );
+    if (foreign) return false;
+    rmSync(file, { force: true });
+    return true;
+  } catch {
+    // Unreadable or malformed: leave the file alone rather than guess.
+    return false;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -557,11 +804,20 @@ export async function confirmPlan(
   if (plan.agent === "claude") {
     print("  ℹ Claude Code 会显示标记原文，无法隐藏 / the marker will be visible in Claude Code replies");
   }
+  if (plan.agent === "dsh") {
+    const profileDir = dshProfileDir();
+    print(`  安装原生插件 / native plugin → ${plan.configPath}${profileDir ? ` (${dshProfilePatchPath(profileDir)})` : ""}`);
+    print("  ℹ 插件直接读 AI 的原话，通知有真实内容，也不需要标记 skill");
+    print("    / the plugin reads what the agent already said: real content, no marker skill");
+  }
 
   const proceedAnswer = await confirmReader.ask("写入钩子配置？[y/N] / write hook config? [y/N] ", print);
   if (!(proceedAnswer === "y" || proceedAnswer === "yes")) {
     return { proceed: false, installSkill: false };
   }
+
+  // DSH has no marker protocol, so there is nothing for the skill to teach.
+  if (plan.agent === "dsh") return { proceed: true, installSkill: false };
 
   // Skill injection is only prompted for a non-batch install when the skill
   // is not yet present. Batch (`install all`) installs the skill implicitly.

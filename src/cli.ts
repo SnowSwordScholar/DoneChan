@@ -7,7 +7,7 @@
  *                              and fire a push. Always exits 0, never blocks.
  *   donechan send [title]      Send a test notification (body from -b).
  *   donechan login <sendkey>   Write the sendkey to ~/.donechan/config.json (0600).
- *   donechan install <agent>   Print hook wiring for zcode|codex|claude.
+ *   donechan install <agent>   Print hook wiring for zcode|codex|claude|opencode|dsh.
  *   donechan check             Validate config without sending.
  */
 
@@ -20,8 +20,8 @@ import { compose } from "./notification/compose.js";
 import { testNotification, resolveTags } from "./notification/presets.js";
 import { isValidSendKey, push } from "./channel/serverchan.js";
 import { loadConfig, userConfigPath } from "./config/load.js";
-import { stageHandoff, spawnDetached, readHandoff, sweepStaleStaging, shellQuoteWin, shellQuotePosix } from "./handoff.js";
-import { checkSendKey, planZcodeInstall, planCodexInstall, planClaudeInstall, planOpencodeInstall, buildZcodeHooks, buildCodexHooks, buildClaudeHooks, mergeHooks, mergeStopHooks, confirmPlan, skillTargetDir, skillSourceFile, codexSkillSourceFile, installSkill, AGENTS, type AgentName } from "./install.js";
+import { stageHandoff, runSendWorker, readHandoff, sweepStaleStaging, shellQuoteWin, shellQuotePosix } from "./handoff.js";
+import { checkSendKey, planZcodeInstall, planCodexInstall, planClaudeInstall, planOpencodeInstall, planDshInstall, buildZcodeHooks, buildCodexHooks, buildClaudeHooks, mergeHooks, mergeStopHooks, installDshPlugin, dshHome, dshProfileDir, dshPluginTargetDir, dshProfilePatchPath, dshPluginSourceDir, dshPluginPatchEntry, confirmPlan, skillTargetDir, skillSourceFile, codexSkillSourceFile, installSkill, AGENTS, type AgentName } from "./install.js";
 import { opencodePluginSource } from "./agent/opencode.js";
 import { codexConfigPath, claudeConfigPath, opencodePluginPath, zcodeConfigPath } from "./install.js";
 
@@ -92,11 +92,38 @@ function parseJsonLoose(text: string): unknown {
 }
 
 /** `donechan hook [raw-json]` — the universal hook entry point. */
-async function cmdHook(argvJson?: string): Promise<number> {
-  // Codex legacy notify passes the JSON as the final argv argument; everyone
-  // else pipes it through stdin.
-  const raw = argvJson ?? (await readStdin());
-  const event = normalize(parseJsonLoose(raw));
+async function cmdHook(argv: string[] = []): Promise<number> {
+  // Three inputs share this entry point: Codex legacy notify passes the JSON
+  // as the final argv argument, the installer may bake an explicit
+  // `--agent <id>` label into the command, and everyone else pipes stdin.
+  let hint: string | undefined;
+  let waitForWorker = false;
+  const positional: string[] = [];
+  for (let i = 0; i < argv.length; i += 1) {
+    const arg = argv[i]!;
+    if (arg === "--agent") {
+      hint = argv[i + 1];
+      i += 1;
+      continue;
+    }
+    // `--wait` is written by installers for agents whose hook runner tears down
+    // the hook's process tree on exit (DSH): the caller must stay alive until
+    // the push finishes, or the worker dies mid-send.
+    if (arg === "--wait") {
+      waitForWorker = true;
+      continue;
+    }
+    positional.push(arg);
+  }
+  const raw = positional[0] ?? (await readStdin());
+  // DSH tears down the hook's process tree the moment the hook exits, so a
+  // DSH-labelled hook must stay alive until its worker's push finishes or the
+  // notification is reaped mid-send. Tying this to the hint (rather than only to
+  // `--wait`) also makes hooks.json files installed before `--wait` existed
+  // correct without rewriting their config. `--wait` is the explicit form the
+  // installer writes, and applies to any agent.
+  if (hint === "dsh") waitForWorker = true;
+  const event = normalize(parseJsonLoose(raw), hint);
   if (!event) {
     // Unrecognized payload: stay silent, never break the agent session.
     return 0;
@@ -117,13 +144,13 @@ async function cmdHook(argvJson?: string): Promise<number> {
     ...(tags ? { tags } : {}),
   };
 
-  // Hand the payload to the detached worker via a temp file: Windows argv has
-  // a hard length limit and marker bodies are unbounded, so argv could drop
+  // Hand the payload to the send worker via a temp file: Windows argv has a
+  // hard length limit and marker bodies are unbounded, so argv could drop
   // notifications silently.
   let handoff: Awaited<ReturnType<typeof stageHandoff>> | null = null;
   try {
     handoff = await stageHandoff(JSON.stringify(payload));
-    spawnDetached(entryPath(), handoff.file, event.cwd);
+    await runSendWorker(entryPath(), handoff.file, event.cwd, waitForWorker);
   } catch (e) {
     err(`donechan: failed to stage payload: ${e instanceof Error ? e.message : e}`);
     // If the worker never got a chance to run, clean the staging dir here so
@@ -136,7 +163,7 @@ async function cmdHook(argvJson?: string): Promise<number> {
   return 0;
 }
 
-/** `donechan __send --payload-file <file>` — internal detached worker. Do not call by hand. */
+/** `donechan __send --payload-file <file>` — internal send worker. Do not call by hand. */
 async function cmdSendInternal(args: string[]): Promise<number> {
   const fileIndex = args.indexOf("--payload-file");
   if (fileIndex < 0 || !args[fileIndex + 1]) return 0;
@@ -258,13 +285,32 @@ async function installAgent(agent: AgentName, printOnly: boolean, batch: boolean
         out(`// 合并进 ${claudeConfigPath()}：`);
         out(JSON.stringify({ hooks: buildClaudeHooks(entry, version) }, null, 2));
         break;
-      case "opencode":
-        out(`// 写入 ${opencodePluginPath()}：`);
-        out(opencodePluginSource(entry, version));
+      case "dsh": {
+        const profileDir = dshProfileDir();
+        out(`// 安装原生插件到 ${profileDir ? dshPluginTargetDir(profileDir) : "(未找到 DSH profile)"}`);
+        out(`// 源文件 / source: ${dshPluginSourceDir(entry) ?? "(缺失)"} → index.js + package.json`);
+        if (profileDir) {
+          out("");
+          out(`// 并在 ${dshProfilePatchPath(profileDir)} 追加（挂载插件）：`);
+          out(dshPluginPatchEntry(entry));
+        }
         break;
+      }
     }
-    out(`// skill 安装位置 / skill target: ${skillTargetDir(agent)}`);
+    if (agent === "dsh") {
+      out("// 不安装 skill：插件直接读 AI 的原话，不需要 AI 写标记");
+      out("// no skill: the plugin reads what the agent already said, so there is no marker to write");
+    } else {
+      out(`// skill 安装位置 / skill target: ${skillTargetDir(agent)}`);
+    }
     out(`// 并确保已配置 sendkey：{"sendkey": "..."} → ${userConfigPath()}`);
+    return 0;
+  }
+
+  // DSH is skipped, not failed, when the machine has no DSH profile: `install all`
+  // must not report a failure for an agent that simply is not installed.
+  if (agent === "dsh" && !dshProfileDir()) {
+    out(`ℹ 未检测到 DSH profile（${join(dshHome(), "profiles")} 下没有目录），跳过 / no DSH profile found, skipped`);
     return 0;
   }
 
@@ -279,6 +325,8 @@ async function installAgent(agent: AgentName, printOnly: boolean, batch: boolean
         return planClaudeInstall();
       case "opencode":
         return planOpencodeInstall();
+      case "dsh":
+        return planDshInstall();
     }
   })();
 
@@ -296,6 +344,18 @@ async function installAgent(agent: AgentName, printOnly: boolean, batch: boolean
 
   try {
     // 1. Agent config.
+    if (agent === "dsh") {
+      // DSH gets a native plugin, not hook wiring: the harness API is what makes
+      // the assistant's own words reachable at all (see adapters/dsh/plugin).
+      const result = installDshPlugin(entry);
+      out(`✅ 插件已安装 / plugin installed → ${result.pluginDir}`);
+      out(result.mounted ? `✅ 已挂载 / mounted → ${result.patchPath}` : `ℹ 挂载已存在，跳过 / mount already present → ${result.patchPath}`);
+      if (result.retiredBridge) {
+        out("ℹ 已退役旧的 hooks 桥接挂载（避免同一条通知推两次）/ retired the superseded hooks bridge mount (it would double-push)");
+      }
+      out("➡ 重启 dsh 后生效 / restart dsh to activate");
+      return 0;
+    }
     if (agent === "opencode") {
       mkdirSync(dirname(plan.configPath), { recursive: true });
       writeFileSync(plan.configPath, opencodePluginSource(entry, version));
@@ -308,14 +368,7 @@ async function installAgent(agent: AgentName, printOnly: boolean, batch: boolean
           ? buildCodexHooks(entry, version)
           : buildClaudeHooks(entry, version);
       const { root } = readJsonRoot(plan.configPath);
-      let merged: Record<string, unknown>;
-      if (agent === "zcode") {
-        // ZCode's merge also forces hooks.enabled — config-file hooks are
-        // disabled by default there; Codex/Claude have no such flag.
-        merged = plan.fileExists ? mergeHooks(root, hooksBlock) : { hooks: hooksBlock };
-      } else {
-        merged = mergeStopHooks(root, hooksBlock);
-      }
+      const merged = agent === "zcode" && plan.fileExists ? mergeHooks(root, hooksBlock) : agent === "zcode" ? { hooks: hooksBlock } : mergeStopHooks(root, hooksBlock);
       mkdirSync(dirname(plan.configPath), { recursive: true });
       writeFileSync(plan.configPath, JSON.stringify(merged, null, 2) + "\n");
     }
@@ -538,7 +591,7 @@ function usage(): number {
   donechan send [标题]     发送测试通知（-b 正文）
   donechan check           校验配置
   donechan install <agent|all> [--print]
-                           交互式接入 agent（zcode | codex | claude | opencode | all），
+                           交互式接入 agent（zcode | codex | claude | opencode | dsh | all），
                            自动写入钩子配置和 donechan-notify skill；--print 仅打印
   donechan config          查看全部配置
   donechan config <key> [<value>]
@@ -568,7 +621,7 @@ async function main(): Promise<number> {
       out(`donechan v${VERSION}`);
       return 0;
     case "hook":
-      return cmdHook(rest[0]);
+      return cmdHook(rest);
     case "__send":
       return cmdSendInternal(rest);
     case "send":

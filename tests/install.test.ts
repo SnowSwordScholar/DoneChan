@@ -4,12 +4,16 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   planZcodeInstall,
+  planDshInstall,
   codexSkillSourceFile,
   buildZcodeHooks,
   buildCodexHooks,
   mergeHooks,
   mergeStopHooks,
   isDoneChanHook,
+  dshPluginPatchEntry,
+  applyPatchEntry,
+  removePatchBlock,
 } from "../src/install.js";
 import { resolveTags, testNotification } from "../src/notification/presets.js";
 import { opencodePluginSource } from "../src/agent/opencode.js";
@@ -193,6 +197,7 @@ describe("resolveTags", () => {
     expect(resolveTags("codex-legacy")).toBe("Codex");
     expect(resolveTags("claude")).toBe("ClaudeCode");
     expect(resolveTags("opencode")).toBe("OpenCode");
+    expect(resolveTags("dsh")).toBe("DSH");
   });
   it("appends configured static tags after the agent tag", () => {
     expect(resolveTags("zcode", "dev|urgent", undefined, false)).toBe("ZCode|dev|urgent");
@@ -214,5 +219,77 @@ describe("testNotification preset", () => {
     const n = testNotification();
     expect(n.body).not.toContain("员工");
     expect(n.body).not.toContain("---");
+  });
+});
+
+describe("planDshInstall", () => {
+  it("reports an unknown plan when no DSH profile exists", () => {
+    const plan = planDshInstall(null);
+    expect(plan.agent).toBe("dsh");
+    expect(plan.existing).toBe("unknown");
+    expect(plan.fileExists).toBe(false);
+  });
+
+  it("plans a create when the plugin is not installed yet", () => {
+    const profile = mkdtempSync(join(tmpdir(), "donechan-profile-"));
+    const plan = planDshInstall(profile);
+    expect(plan.fileExists).toBe(false);
+    expect(plan.existing).toBe("none");
+    expect(plan.configPath).toBe(join(profile, "node_modules", "donechan-dsh"));
+  });
+
+  it("detects a plugin already installed in the profile", () => {
+    const profile = mkdtempSync(join(tmpdir(), "donechan-profile-"));
+    const dir = join(profile, "node_modules", "donechan-dsh");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "index.js"), "export const name = \"donechan\";\n");
+    const plan = planDshInstall(profile);
+    expect(plan.existing).toBe("marked");
+    expect(plan.fileExists).toBe(true);
+  });
+});
+
+describe("dsh plugin install helpers", () => {
+  it("mounts the plugin into the profile patch by package name", () => {
+    const entry = dshPluginPatchEntry("C:\\donechan\\dist\\cli.js");
+    expect(entry).toContain("id: donechan");
+    expect(entry).toContain("name: donechan-dsh");
+    expect(entry).toContain("cliPath: 'C:\\donechan\\dist\\cli.js'");
+  });
+
+  it("appends once and then stays idempotent", () => {
+    const dir = mkdtempSync(join(tmpdir(), "donechan-profile-"));
+    const patch = join(dir, "cordis.patch.yml");
+    expect(applyPatchEntry(patch, "donechan", dshPluginPatchEntry("C:\\x\\cli.js"))).toBe(true);
+    expect(applyPatchEntry(patch, "donechan", dshPluginPatchEntry("C:\\x\\cli.js"))).toBe(false);
+    expect(readFileSync(patch, "utf8").match(/id: donechan\b/g)).toHaveLength(1);
+  });
+
+  it("removes only DoneChan's own block from a shared patch file", () => {
+    const dir = mkdtempSync(join(tmpdir(), "donechan-profile-"));
+    const patch = join(dir, "cordis.patch.yml");
+    writeFileSync(
+      patch,
+      [
+        "- id: fs-sandbox",
+        "  disabled: true",
+        "",
+        "- insert:",
+        "    - id: donechan-hooks",
+        "      name: '@deepseek-ai/dsh-hooks-claude-code'",
+        "      config:",
+        "        configPath: 'C:\\Users\\u\\.dsh\\hooks.json'",
+        "",
+        "- insert:",
+        "    - id: fs-allowlist",
+        "      name: dsh-fs-allowlist",
+        "",
+      ].join("\n"),
+    );
+    expect(removePatchBlock(patch, "donechan-hooks")).toBe(true);
+    const after = readFileSync(patch, "utf8");
+    expect(after).not.toContain("donechan-hooks");
+    expect(after).toContain("- id: fs-sandbox");
+    expect(after).toContain("id: fs-allowlist");
   });
 });

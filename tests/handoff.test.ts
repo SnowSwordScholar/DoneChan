@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { existsSync, mkdirSync, writeFileSync, utimesSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync, utimesSync, mkdtempSync } from "node:fs";
 import { dirname } from "node:path";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -8,9 +8,36 @@ import {
   stageHandoff,
   sweepStaleStaging,
   isOwnStagingDir,
+  runSendWorker,
   shellQuoteWin,
   shellQuotePosix,
 } from "../src/handoff.js";
+
+describe("runSendWorker", () => {
+  /**
+   * The DSH fix: where the parent's process tree is torn down on exit (DSH's
+   * hook runner), a detached worker is reaped partway through its push. Waiting
+   * keeps the caller alive until the worker is actually done.
+   */
+  it("wait:true does not resolve until the worker has finished its work", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "donechan-wait-"));
+    const entry = join(dir, "slow-worker.mjs");
+    const marker = join(dir, "marker.txt");
+    // Mimics the `__send --payload-file <file>` shape: the payload path is the
+    // last argument, and the work deliberately outlives the caller's return.
+    writeFileSync(
+      entry,
+      [
+        'import { writeFileSync } from "node:fs";',
+        "const file = process.argv[process.argv.length - 1];",
+        "await new Promise((r) => setTimeout(r, 250));",
+        'writeFileSync(file, "done");',
+      ].join("\n"),
+    );
+    await runSendWorker(entry, marker, dir, true);
+    expect(existsSync(marker)).toBe(true);
+  });
+}, 15_000);
 
 describe("handoff staging", () => {
   it("writes the payload to a temp file and the worker reads it back", async () => {

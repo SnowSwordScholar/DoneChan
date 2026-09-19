@@ -1,0 +1,9 @@
+{
+  "name": "donechan-dsh",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "index.js",
+  "description": "DoneChan notifications for DeepSeek Harness: pushes a ServerChan message when the agent finishes a turn, or when it parks on a question you have to answer.",
+  "license": "MIT"
+}
