@@ -3,6 +3,17 @@
 All notable changes to DoneChan will be documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.3.1] - 2026-09-19
+
+### Fixed
+
+- npm metadata: 0.3.0 was published a minute before the metadata correction
+  landed, so the registry still showed the pre-DSH description and a keyword
+  list without `dsh`. This release carries the corrected description (DSH
+  support, waiting notifications, reply-first content) and adds the `dsh`,
+  `deepseek` and `deepseek-harness` keywords. The 0.3.0 tarball itself is
+  functionally complete — only its published manifest was stale.
+
 ## [0.3.0] - 2026-09-19
 
 ### Added

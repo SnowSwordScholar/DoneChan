@@ -1,6 +1,6 @@
 {
   "name": "donechan",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "AI-agent notifications via ServerChan³ for ZCode, Codex, Claude Code, OpenCode and DSH — pushed when a task finishes or when the agent is waiting on your answer, carrying the AI's own reply.",
   "license": "MIT",
   "author": "雪剑书生 <73566969+SnowSwordScholar@users.noreply.github.com> (https://github.com/SnowSwordScholar)",
